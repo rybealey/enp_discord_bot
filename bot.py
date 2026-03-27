@@ -1,4 +1,4 @@
-__version__ = "0.1.0"
+__version__ = "1.0.0"
 
 import os
 import logging
@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 
 import aiohttp
 import discord
-from discord.ext import commands, tasks
+from discord import app_commands
+from discord.ext import tasks
 from dotenv import load_dotenv
 
 from database import (
@@ -16,6 +17,7 @@ from database import (
     get_events_by_officer,
     get_events_by_perpetrator,
     get_events_by_action,
+    get_weekly_arrest_leaderboard,
     get_event_count,
 )
 from api_poller import fetch_livefeed
@@ -42,22 +44,20 @@ logger = logging.getLogger("enp_bot")
 # Bot setup
 # ---------------------------------------------------------------------------
 intents = discord.Intents.default()
-intents.message_content = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = discord.Client(intents=intents)
+tree = app_commands.CommandTree(bot)
 
 
 # ---------------------------------------------------------------------------
 # Role check
 # ---------------------------------------------------------------------------
-def has_allowed_role():
-    """Command check: user must have at least one of the allowed roles."""
-    async def predicate(ctx: commands.Context) -> bool:
-        if not ctx.guild:
-            return False
-        user_roles = [role.name for role in ctx.author.roles]
-        return any(role in user_roles for role in ALLOWED_ROLES)
-    return commands.check(predicate)
+def has_allowed_role(interaction: discord.Interaction) -> bool:
+    """Check that the user has at least one of the allowed roles."""
+    if not interaction.guild:
+        return False
+    user_roles = [role.name for role in interaction.user.roles]
+    return any(role in user_roles for role in ALLOWED_ROLES)
 
 
 # ---------------------------------------------------------------------------
@@ -93,13 +93,8 @@ async def on_ready():
     if not poll_livefeed.is_running():
         poll_livefeed.start()
 
-
-@bot.event
-async def on_command_error(ctx: commands.Context, error):
-    if isinstance(error, commands.CheckFailure):
-        await ctx.send("You don't have permission to use this command.")
-    else:
-        logger.error("Command error: %s", error)
+    await tree.sync()
+    logger.info("Slash commands synced")
 
 
 # ---------------------------------------------------------------------------
@@ -113,129 +108,134 @@ def format_event(row) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Commands
+# Slash Commands
 # ---------------------------------------------------------------------------
-@bot.command(name="recent")
-@has_allowed_role()
-async def cmd_recent(ctx: commands.Context, count: int = 10):
-    """Show the most recent police events.
-
-    Usage: !recent [count]
-    """
+@tree.command(name="recent", description="Show the most recent police events")
+@app_commands.check(has_allowed_role)
+@app_commands.describe(count="Number of events to show (default: 10, max: 25)")
+async def cmd_recent(interaction: discord.Interaction, count: int = 10):
     count = min(count, 25)
     events = get_recent_events(count)
     if not events:
-        await ctx.send("No police events recorded yet.")
+        await interaction.response.send_message("No police events recorded yet.")
         return
 
     lines = [format_event(e) for e in events]
     header = f"**Last {len(events)} Police Events**\n"
-    await ctx.send(header + "\n".join(lines))
+    await interaction.response.send_message(header + "\n".join(lines))
 
 
-@bot.command(name="officer")
-@has_allowed_role()
-async def cmd_officer(ctx: commands.Context, *, name: str):
-    """Look up recent actions by a specific officer.
-
-    Usage: !officer <officer_name>
-    """
+@tree.command(name="officer", description="Look up recent actions by a specific officer")
+@app_commands.check(has_allowed_role)
+@app_commands.describe(name="Officer name to look up")
+async def cmd_officer(interaction: discord.Interaction, name: str):
     events = get_events_by_officer(name, limit=15)
     if not events:
-        await ctx.send(f"No events found for officer **{name}**.")
+        await interaction.response.send_message(f"No events found for officer **{name}**.")
         return
 
     lines = [format_event(e) for e in events]
     header = f"**Actions by officer: {name}**\n"
-    await ctx.send(header + "\n".join(lines))
+    await interaction.response.send_message(header + "\n".join(lines))
 
 
-@bot.command(name="suspect")
-@has_allowed_role()
-async def cmd_suspect(ctx: commands.Context, *, name: str):
-    """Look up recent police actions against a specific player.
-
-    Usage: !suspect <player_name>
-    """
+@tree.command(name="suspect", description="Look up recent police actions against a player")
+@app_commands.check(has_allowed_role)
+@app_commands.describe(name="Player name to look up")
+async def cmd_suspect(interaction: discord.Interaction, name: str):
     events = get_events_by_perpetrator(name, limit=15)
     if not events:
-        await ctx.send(f"No events found for **{name}**.")
+        await interaction.response.send_message(f"No events found for **{name}**.")
         return
 
     lines = [format_event(e) for e in events]
     header = f"**Police actions against: {name}**\n"
-    await ctx.send(header + "\n".join(lines))
+    await interaction.response.send_message(header + "\n".join(lines))
 
 
-@bot.command(name="arrests")
-@has_allowed_role()
-async def cmd_arrests(ctx: commands.Context, count: int = 10):
-    """Show recent arrests.
-
-    Usage: !arrests [count]
-    """
+@tree.command(name="arrests", description="Show recent arrests")
+@app_commands.check(has_allowed_role)
+@app_commands.describe(count="Number of arrests to show (default: 10, max: 25)")
+async def cmd_arrests(interaction: discord.Interaction, count: int = 10):
     count = min(count, 25)
     events = get_events_by_action("arrested", limit=count)
     if not events:
-        await ctx.send("No arrests recorded yet.")
+        await interaction.response.send_message("No arrests recorded yet.")
         return
 
     lines = [format_event(e) for e in events]
-    header = f"**Recent Arrests**\n"
-    await ctx.send(header + "\n".join(lines))
+    await interaction.response.send_message("**Recent Arrests**\n" + "\n".join(lines))
 
 
-@bot.command(name="charges")
-@has_allowed_role()
-async def cmd_charges(ctx: commands.Context, count: int = 10):
-    """Show recent charges.
-
-    Usage: !charges [count]
-    """
+@tree.command(name="charges", description="Show recent charges")
+@app_commands.check(has_allowed_role)
+@app_commands.describe(count="Number of charges to show (default: 10, max: 25)")
+async def cmd_charges(interaction: discord.Interaction, count: int = 10):
     count = min(count, 25)
     events = get_events_by_action("charged", limit=count)
     if not events:
-        await ctx.send("No charges recorded yet.")
+        await interaction.response.send_message("No charges recorded yet.")
         return
 
     lines = [format_event(e) for e in events]
-    header = f"**Recent Charges**\n"
-    await ctx.send(header + "\n".join(lines))
+    await interaction.response.send_message("**Recent Charges**\n" + "\n".join(lines))
 
 
-
-@bot.command(name="pardons")
-@has_allowed_role()
-async def cmd_pardons(ctx: commands.Context, count: int = 10):
-    """Show recent pardons.
-
-    Usage: !pardons [count]
-    """
+@tree.command(name="pardons", description="Show recent pardons")
+@app_commands.check(has_allowed_role)
+@app_commands.describe(count="Number of pardons to show (default: 10, max: 25)")
+async def cmd_pardons(interaction: discord.Interaction, count: int = 10):
     count = min(count, 25)
     events = get_events_by_action("pardoned", limit=count)
     if not events:
-        await ctx.send("No pardons recorded yet.")
+        await interaction.response.send_message("No pardons recorded yet.")
         return
 
     lines = [format_event(e) for e in events]
-    header = f"**Recent Pardons**\n"
-    await ctx.send(header + "\n".join(lines))
+    await interaction.response.send_message("**Recent Pardons**\n" + "\n".join(lines))
 
 
-@bot.command(name="stats")
-@has_allowed_role()
-async def cmd_stats(ctx: commands.Context):
-    """Show basic stats about recorded police activity.
+@tree.command(name="leaderboard", description="Top officers by arrest count for the current week")
+@app_commands.check(has_allowed_role)
+@app_commands.describe(count="Number of officers to show (default: 10, max: 25)")
+async def cmd_leaderboard(interaction: discord.Interaction, count: int = 10):
+    count = min(count, 25)
+    rows = get_weekly_arrest_leaderboard(limit=count)
+    if not rows:
+        await interaction.response.send_message("No arrests recorded this week.")
+        return
 
-    Usage: !stats
-    """
+    lines = []
+    for rank, row in enumerate(rows, start=1):
+        medal = {1: "\U0001f947", 2: "\U0001f948", 3: "\U0001f949"}.get(rank, f"**{rank}.**")
+        lines.append(f"{medal} **{row['officer']}** — {row['arrest_count']} arrest{'s' if row['arrest_count'] != 1 else ''}")
+
+    await interaction.response.send_message("**Weekly Arrest Leaderboard**\n" + "\n".join(lines))
+
+
+@tree.command(name="stats", description="Show bot stats and configuration")
+@app_commands.check(has_allowed_role)
+async def cmd_stats(interaction: discord.Interaction):
     total = get_event_count()
-    await ctx.send(
+    await interaction.response.send_message(
         f"**ENP Bot Stats**\n"
         f"Total police events recorded: **{total}**\n"
         f"Polling every **{POLL_INTERVAL}s**\n"
         f"Tracking: arrests, charges, pardons"
     )
+
+
+# ---------------------------------------------------------------------------
+# Global error handler for slash commands
+# ---------------------------------------------------------------------------
+@tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.CheckFailure):
+        await interaction.response.send_message(
+            "You don't have permission to use this command.", ephemeral=True
+        )
+    else:
+        logger.error("Command error: %s", error)
 
 
 # ---------------------------------------------------------------------------

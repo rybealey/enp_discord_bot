@@ -2,7 +2,7 @@
 
 A Discord bot that polls the AnubisRP livefeed API every 15 seconds, filters for police activity (arrests, charges, pardons), and stores it in a local SQLite database. Server members with the right roles can query the data through Discord commands.
 
-## Setup
+## Local Setup
 
 ### 1. Install dependencies
 
@@ -29,10 +29,9 @@ POLL_INTERVAL=15
 1. Go to https://discord.com/developers/applications
 2. Create a new application
 3. Go to **Bot** → click **Reset Token** → copy the token into `.env`
-4. Enable **Message Content Intent** under Privileged Gateway Intents
-5. Go to **OAuth2** → **URL Generator** → select `bot` scope
-6. Under Bot Permissions, select: `Send Messages`, `Read Message History`, `View Channels`
-7. Use the generated URL to invite the bot to your server
+4. Go to **OAuth2** → **URL Generator** → select `bot` and `applications.commands` scopes
+5. Under Bot Permissions, select: `Send Messages`, `Read Message History`, `View Channels`
+6. Use the generated URL to invite the bot to your server
 
 ### 4. Run the bot
 
@@ -40,19 +39,52 @@ POLL_INTERVAL=15
 python bot.py
 ```
 
+## Railway Deployment
+
+### 1. Create a new project on Railway
+
+1. Link your GitHub repo or push directly via the Railway CLI
+2. Railway will auto-detect the `Procfile` and run the bot as a **worker** service
+
+### 2. Add a volume for persistent storage
+
+The SQLite database needs to survive redeployments. Without a volume, your data is lost on every deploy.
+
+1. In your Railway service, go to **Settings** → **Volumes**
+2. Click **Add Volume**
+3. Set the **Mount Path** to `/data`
+
+### 3. Set environment variables
+
+In your Railway service, go to **Variables** and add:
+
+| Variable | Value |
+|----------|-------|
+| `DISCORD_TOKEN` | Your bot token |
+| `ALLOWED_ROLES` | `Admin,Moderator` (comma-separated) |
+| `POLL_INTERVAL` | `15` |
+| `DB_PATH` | `/data` |
+
+`DB_PATH` must match the volume mount path. This tells the bot to write `enp_bot.db` to the persistent volume instead of the ephemeral filesystem.
+
+### 4. Deploy
+
+Railway will automatically build and deploy on push. The bot runs as a worker process (no exposed port needed).
+
 ## Commands
 
 All commands require one of the configured `ALLOWED_ROLES`.
 
 | Command | Description |
 |---------|-------------|
-| `!recent [count]` | Show the most recent police events (default: 10, max: 25) |
-| `!officer <name>` | Look up recent actions by a specific officer |
-| `!suspect <name>` | Look up recent police actions against a specific player |
-| `!arrests [count]` | Show recent arrests |
-| `!charges [count]` | Show recent charges |
-| `!pardons [count]` | Show recent pardons |
-| `!stats` | Show total recorded events and bot configuration |
+| `/recent [count]` | Show the most recent police events (default: 10, max: 25) |
+| `/officer <name>` | Look up recent actions by a specific officer |
+| `/suspect <name>` | Look up recent police actions against a specific player |
+| `/arrests [count]` | Show recent arrests |
+| `/charges [count]` | Show recent charges |
+| `/pardons [count]` | Show recent pardons |
+| `/leaderboard [count]` | Top officers by arrest count for the current week |
+| `/stats` | Show total recorded events and bot configuration |
 
 ## Database Schema
 
@@ -83,6 +115,7 @@ enp_bot/
 ├── bot.py             # Discord bot, commands, and background polling task
 ├── api_poller.py      # API fetching and police event parsing/filtering
 ├── database.py        # SQLite schema, inserts, and queries
+├── Procfile           # Railway process definition
 ├── requirements.txt
 ├── setup.cfg          # Project metadata and version
 ├── .bumpversion.cfg   # Version bump configuration

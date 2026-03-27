@@ -1,7 +1,8 @@
 import sqlite3
 import os
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "enp_bot.db")
+DB_DIR = os.getenv("DB_PATH", os.path.dirname(__file__))
+DB_PATH = os.path.join(DB_DIR, "enp_bot.db")
 
 
 def get_connection() -> sqlite3.Connection:
@@ -99,6 +100,23 @@ def get_events_by_action(action: str, limit: int = 10) -> list[sqlite3.Row]:
     rows = conn.execute(
         "SELECT * FROM police_events WHERE action LIKE ? ORDER BY timestamp DESC LIMIT ?",
         (f"%{action}%", limit),
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+def get_weekly_arrest_leaderboard(limit: int = 10) -> list[sqlite3.Row]:
+    """Top officers by arrest count for the current week (Monday–Sunday UTC)."""
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT officer, COUNT(*) as arrest_count
+           FROM police_events
+           WHERE action = 'arrested'
+             AND timestamp >= CAST(strftime('%%s', 'now', 'weekday 1', '-7 days', 'start of day') AS INTEGER)
+           GROUP BY officer
+           ORDER BY arrest_count DESC
+           LIMIT ?""",
+        (limit,),
     ).fetchall()
     conn.close()
     return rows
