@@ -1,4 +1,4 @@
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 import io
 import os
@@ -137,7 +137,7 @@ def build_event_embed(title: str, events: list, color: discord.Color = None) -> 
         else:
             color = discord.Color.blurple()
 
-    lines = [format_event_line(e) for e in events]
+    lines = [format_event_line(e) for e in reversed(events)]
     embed = discord.Embed(
         title=title,
         description="\n".join(lines),
