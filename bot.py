@@ -111,7 +111,7 @@ def format_event(row) -> str:
 # Slash Commands
 # ---------------------------------------------------------------------------
 @tree.command(name="recent", description="Show the most recent police events")
-@app_commands.check(has_allowed_role)
+
 @app_commands.describe(count="Number of events to show (default: 10, max: 25)")
 async def cmd_recent(interaction: discord.Interaction, count: int = 10):
     count = min(count, 25)
@@ -126,7 +126,7 @@ async def cmd_recent(interaction: discord.Interaction, count: int = 10):
 
 
 @tree.command(name="officer", description="Look up recent actions by a specific officer")
-@app_commands.check(has_allowed_role)
+
 @app_commands.describe(name="Officer name to look up")
 async def cmd_officer(interaction: discord.Interaction, name: str):
     events = get_events_by_officer(name, limit=15)
@@ -140,7 +140,7 @@ async def cmd_officer(interaction: discord.Interaction, name: str):
 
 
 @tree.command(name="suspect", description="Look up recent police actions against a player")
-@app_commands.check(has_allowed_role)
+
 @app_commands.describe(name="Player name to look up")
 async def cmd_suspect(interaction: discord.Interaction, name: str):
     events = get_events_by_perpetrator(name, limit=15)
@@ -154,7 +154,7 @@ async def cmd_suspect(interaction: discord.Interaction, name: str):
 
 
 @tree.command(name="arrests", description="Show recent arrests")
-@app_commands.check(has_allowed_role)
+
 @app_commands.describe(count="Number of arrests to show (default: 10, max: 25)")
 async def cmd_arrests(interaction: discord.Interaction, count: int = 10):
     count = min(count, 25)
@@ -168,7 +168,7 @@ async def cmd_arrests(interaction: discord.Interaction, count: int = 10):
 
 
 @tree.command(name="charges", description="Show recent charges")
-@app_commands.check(has_allowed_role)
+
 @app_commands.describe(count="Number of charges to show (default: 10, max: 25)")
 async def cmd_charges(interaction: discord.Interaction, count: int = 10):
     count = min(count, 25)
@@ -182,7 +182,7 @@ async def cmd_charges(interaction: discord.Interaction, count: int = 10):
 
 
 @tree.command(name="pardons", description="Show recent pardons")
-@app_commands.check(has_allowed_role)
+
 @app_commands.describe(count="Number of pardons to show (default: 10, max: 25)")
 async def cmd_pardons(interaction: discord.Interaction, count: int = 10):
     count = min(count, 25)
@@ -196,7 +196,7 @@ async def cmd_pardons(interaction: discord.Interaction, count: int = 10):
 
 
 @tree.command(name="leaderboard", description="Top officers by arrest count for the current week")
-@app_commands.check(has_allowed_role)
+
 @app_commands.describe(count="Number of officers to show (default: 10, max: 25)")
 async def cmd_leaderboard(interaction: discord.Interaction, count: int = 10):
     count = min(count, 25)
@@ -214,7 +214,7 @@ async def cmd_leaderboard(interaction: discord.Interaction, count: int = 10):
 
 
 @tree.command(name="stats", description="Show bot stats and configuration")
-@app_commands.check(has_allowed_role)
+
 async def cmd_stats(interaction: discord.Interaction):
     total = get_event_count()
     await interaction.response.send_message(
