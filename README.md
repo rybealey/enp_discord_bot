@@ -73,18 +73,18 @@ Railway will automatically build and deploy on push. The bot runs as a worker pr
 
 ## Commands
 
-All commands require one of the configured `ALLOWED_ROLES`.
+All responses are displayed as color-coded Discord embeds with relative timestamps.
 
 | Command | Description |
 |---------|-------------|
 | `/recent [count]` | Show the most recent police events (default: 10, max: 25) |
 | `/officer <name>` | Look up recent actions by a specific officer |
 | `/suspect <name>` | Look up recent police actions against a specific player |
-| `/arrests [count]` | Show recent arrests |
-| `/charges [count]` | Show recent charges |
-| `/pardons [count]` | Show recent pardons |
-| `/leaderboard [count]` | Top officers by arrest count for the current week |
-| `/stats` | Show total recorded events and bot configuration |
+| `/arrests [count]` | Show recent arrests (red embed) |
+| `/charges [count]` | Show recent charges (orange embed) |
+| `/pardons [count]` | Show recent pardons (green embed) |
+| `/leaderboard [count]` | Top officers by weekly arrest count (gold embed) |
+| `/stats` | Bot version, event totals, and configuration |
 
 ## Database Schema
 
