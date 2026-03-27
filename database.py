@@ -122,6 +122,23 @@ def get_weekly_arrest_leaderboard(limit: int = 10) -> list[sqlite3.Row]:
     return rows
 
 
+def get_weekly_action_by_officer(action: str, limit: int = 15) -> list[sqlite3.Row]:
+    """Officers ranked by count of a specific action for the current week."""
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT officer, COUNT(*) as action_count
+           FROM police_events
+           WHERE action = ?
+             AND timestamp >= CAST(strftime('%%s', 'now', 'weekday 1', '-7 days', 'start of day') AS INTEGER)
+           GROUP BY officer
+           ORDER BY action_count DESC
+           LIMIT ?""",
+        (action, limit),
+    ).fetchall()
+    conn.close()
+    return rows
+
+
 def get_event_count() -> int:
     conn = get_connection()
     count = conn.execute("SELECT COUNT(*) FROM police_events").fetchone()[0]

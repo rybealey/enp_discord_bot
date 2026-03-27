@@ -84,7 +84,10 @@ All responses are displayed as color-coded Discord embeds with relative timestam
 | `/charges [count]` | Show recent charges (orange embed) |
 | `/pardons [count]` | Show recent pardons (green embed) |
 | `/leaderboard [count]` | Top officers by weekly arrest count (gold embed) |
+| `/graph <action>` | Bar graph of officers by action type for the current week |
 | `/stats` | Bot version, event totals, and configuration |
+
+The `/graph` command accepts a dropdown choice of **Arrests**, **Charges**, or **Pardons** and renders a horizontal bar chart styled to match Discord's dark theme, embedded as an image.
 
 ## Database Schema
 

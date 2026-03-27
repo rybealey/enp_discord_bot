@@ -1,11 +1,15 @@
 __version__ = "1.0.0"
 
+import io
 import os
 import logging
 from datetime import datetime, timezone
 
 import aiohttp
 import discord
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 from discord import app_commands
 from discord.ext import tasks
 from dotenv import load_dotenv
@@ -18,6 +22,7 @@ from database import (
     get_events_by_perpetrator,
     get_events_by_action,
     get_weekly_arrest_leaderboard,
+    get_weekly_action_by_officer,
     get_event_count,
 )
 from api_poller import fetch_livefeed
@@ -244,6 +249,67 @@ async def cmd_leaderboard(interaction: discord.Interaction, count: int = 10):
     )
     embed.set_footer(text=f"ENP Bot v{__version__}")
     await interaction.response.send_message(embed=embed)
+
+
+GRAPH_COLORS = {
+    "arrested": "#e74c3c",
+    "charged": "#e67e22",
+    "pardoned": "#2ecc71",
+}
+
+GRAPH_ACTION_CHOICES = [
+    app_commands.Choice(name="Arrests", value="arrested"),
+    app_commands.Choice(name="Charges", value="charged"),
+    app_commands.Choice(name="Pardons", value="pardoned"),
+]
+
+
+@tree.command(name="graph", description="Bar graph of officers by action type for the current week")
+@app_commands.describe(action="Type of police action to graph")
+@app_commands.choices(action=GRAPH_ACTION_CHOICES)
+async def cmd_graph(interaction: discord.Interaction, action: app_commands.Choice[str]):
+    rows = get_weekly_action_by_officer(action.value, limit=15)
+    if not rows:
+        await interaction.response.send_message(
+            f"No {action.name.lower()} recorded this week.", ephemeral=True
+        )
+        return
+
+    await interaction.response.defer()
+
+    officers = [row["officer"] for row in reversed(rows)]
+    counts = [row["action_count"] for row in reversed(rows)]
+    bar_color = GRAPH_COLORS.get(action.value, "#7289da")
+
+    fig, ax = plt.subplots(figsize=(10, max(3, len(officers) * 0.5)))
+    bars = ax.barh(officers, counts, color=bar_color, edgecolor="white", linewidth=0.5)
+    ax.bar_label(bars, padding=4, fontsize=11, fontweight="bold", color="white")
+
+    ax.set_xlabel("Count", fontsize=12, color="white")
+    ax.set_title(f"Weekly {action.name} by Officer", fontsize=14, fontweight="bold", color="white", pad=12)
+
+    ax.set_facecolor("#2b2d31")
+    fig.set_facecolor("#2b2d31")
+    ax.tick_params(colors="white", labelsize=11)
+    ax.xaxis.label.set_color("white")
+    for spine in ax.spines.values():
+        spine.set_color("#40444b")
+    ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.close(fig)
+    buf.seek(0)
+
+    file = discord.File(buf, filename="graph.png")
+    embed = discord.Embed(
+        title=f"\U0001f4ca Weekly {action.name} by Officer",
+        color=discord.Color.from_str(bar_color),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_image(url="attachment://graph.png")
+    embed.set_footer(text=f"ENP Bot v{__version__}")
+    await interaction.followup.send(embed=embed, file=file)
 
 
 @tree.command(name="stats", description="Show bot stats and configuration")
