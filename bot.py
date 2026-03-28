@@ -398,11 +398,19 @@ async def cmd_shifts(interaction: discord.Interaction):
         for m in rank_members:
             weekly = m["weekly_shifts"]
             total = m["total_shifts"]
-            lines.append(
-                f"\u2003 **{m['username']}** \u2014 "
-                f"\U0001f4c5 `{weekly}` weekly \u2003 "
-                f"\U0001f4ca `{total}` total"
-            )
+            if weekly < 40:
+                lines.append(
+                    f"\u2003 \u26a0\ufe0f **{m['username']}** \u2014 "
+                    f"\U0001f4c5 `{weekly}` weekly \u2003 "
+                    f"\U0001f4ca `{total}` total \u2003 "
+                    f"*\u2014 Below 40 shifts!*"
+                )
+            else:
+                lines.append(
+                    f"\u2003 **{m['username']}** \u2014 "
+                    f"\U0001f4c5 `{weekly}` weekly \u2003 "
+                    f"\U0001f4ca `{total}` total"
+                )
         sections.append("\n".join(lines))
 
     embed = discord.Embed(
