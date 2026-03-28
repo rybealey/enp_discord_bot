@@ -314,13 +314,32 @@ async def cmd_graph(interaction: discord.Interaction, action: app_commands.Choic
 
 CORP_API_URL = "https://api.anubisrp.com/v2.5/corp/id/1"
 
+import re
+
 # Base rank ordering from highest to lowest (used by /shifts)
 RANK_ORDER = ["Colonel", "Captain", "Lieutenant", "Sergeant", "Corporal", "Private"]
+
+RANK_EMOJIS = {
+    "Colonel": "\u2B50",       # ⭐
+    "Captain": "\U0001f396",   # 🎖
+    "Lieutenant": "\U0001f6e1",# 🛡
+    "Sergeant": "\u2694\ufe0f",# ⚔️
+    "Corporal": "\U0001f6e1",  # 🛡
+    "Private": "\U0001f46e",   # 👮
+}
+
+RANK_COLORS = {
+    "Colonel": discord.Color.gold(),
+    "Captain": discord.Color.from_str("#e74c3c"),
+    "Lieutenant": discord.Color.from_str("#e67e22"),
+    "Sergeant": discord.Color.from_str("#3498db"),
+    "Corporal": discord.Color.from_str("#2ecc71"),
+    "Private": discord.Color.from_str("#95a5a6"),
+}
 
 
 def strip_rank_tier(role_name: str) -> str:
     """Strip tier suffixes (I, II, III, etc.) and whitespace from a rank name."""
-    import re
     return re.sub(r"\s+[IVX]+$", "", role_name.strip())
 
 
@@ -364,30 +383,44 @@ async def cmd_shifts(interaction: discord.Interaction):
     # Sort: highest rank first, then highest weekly_shifts within each rank
     members.sort(key=lambda m: (rank_priority.get(m["base_rank"], 999), -m["weekly_shifts"]))
 
-    # Build embed with fields per base rank
-    embed = discord.Embed(
+    # Group members by base rank
+    from collections import OrderedDict
+    grouped = OrderedDict()
+    for m in members:
+        grouped.setdefault(m["base_rank"], []).append(m)
+
+    # Send a header embed first
+    header = discord.Embed(
         title="\U0001f4cb Shift Overview",
+        description=f"Showing shifts for **{len(members)}** members across **{len(grouped)}** ranks",
         color=discord.Color.blurple(),
         timestamp=datetime.now(timezone.utc),
     )
+    header.set_footer(text=f"ENP Bot v{__version__}")
+    await interaction.followup.send(embed=header)
 
-    current_rank = None
-    field_lines = []
-    for m in members:
-        if m["base_rank"] != current_rank:
-            if current_rank is not None:
-                embed.add_field(name=current_rank, value="\n".join(field_lines), inline=False)
-                field_lines = []
-            current_rank = m["base_rank"]
-        weekly = m["weekly_shifts"]
-        total = m["total_shifts"]
-        field_lines.append(f"**{m['username']}** — {weekly} weekly · {total} total")
+    # Send one embed per rank group
+    for rank_name, rank_members in grouped.items():
+        emoji = RANK_EMOJIS.get(rank_name, "\U0001f46e")
+        color = RANK_COLORS.get(rank_name, discord.Color.blurple())
 
-    if field_lines:
-        embed.add_field(name=current_rank, value="\n".join(field_lines), inline=False)
+        lines = []
+        for i, m in enumerate(rank_members, start=1):
+            weekly = m["weekly_shifts"]
+            total = m["total_shifts"]
+            lines.append(
+                f"`{i}.` **{m['username']}**\n"
+                f"\u2003\U0001f4c5 Weekly: **{weekly}**\u2003\u2003"
+                f"\U0001f4ca Total: **{total}**"
+            )
 
-    embed.set_footer(text=f"ENP Bot v{__version__}")
-    await interaction.followup.send(embed=embed)
+        embed = discord.Embed(
+            title=f"{emoji}  {rank_name}",
+            description="\n\n".join(lines),
+            color=color,
+        )
+        embed.set_footer(text=f"{len(rank_members)} member{'s' if len(rank_members) != 1 else ''}")
+        await interaction.channel.send(embed=embed)
 
 
 @tree.command(name="stats", description="Show bot stats and configuration")
