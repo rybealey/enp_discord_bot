@@ -1,4 +1,4 @@
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 import io
 import os
@@ -328,14 +328,7 @@ RANK_EMOJIS = {
     "Private": "\U0001f46e",   # 👮
 }
 
-RANK_COLORS = {
-    "Colonel": discord.Color.gold(),
-    "Captain": discord.Color.from_str("#e74c3c"),
-    "Lieutenant": discord.Color.from_str("#e67e22"),
-    "Sergeant": discord.Color.from_str("#3498db"),
-    "Corporal": discord.Color.from_str("#2ecc71"),
-    "Private": discord.Color.from_str("#95a5a6"),
-}
+WEEKLY_SHIFT_REQ = 40
 
 
 def strip_rank_tier(role_name: str) -> str:
@@ -389,37 +382,39 @@ async def cmd_shifts(interaction: discord.Interaction):
     for m in members:
         grouped.setdefault(m["base_rank"], []).append(m)
 
-    # Build single embed with all ranks
-    sections = []
-    for rank_name, rank_members in grouped.items():
-        emoji = RANK_EMOJIS.get(rank_name, "\U0001f46e")
-
-        lines = [f"**{emoji} {rank_name}**"]
-        for m in rank_members:
-            weekly = m["weekly_shifts"]
-            total = m["total_shifts"]
-            if weekly < 40:
-                lines.append(
-                    f"\u2003 \u26a0\ufe0f **{m['username']}** \u2014 "
-                    f"\U0001f4c5 `{weekly}` weekly \u2003 "
-                    f"\U0001f4ca `{total}` total \u2003 "
-                    f"*\u2014 Below 40 shifts!*"
-                )
-            else:
-                lines.append(
-                    f"\u2003 **{m['username']}** \u2014 "
-                    f"\U0001f4c5 `{weekly}` weekly \u2003 "
-                    f"\U0001f4ca `{total}` total"
-                )
-        sections.append("\n".join(lines))
+    # Build embed using fields for clean rank sections
+    below_req = sum(1 for m in members if m["weekly_shifts"] < WEEKLY_SHIFT_REQ)
 
     embed = discord.Embed(
         title="\U0001f4cb Shift Overview",
-        description="\n\n".join(sections),
-        color=discord.Color.blurple(),
+        description=(
+            f"**{len(members)}** members across **{len(grouped)}** ranks\n"
+            f"\u26a0\ufe0f **{below_req}** below weekly requirement ({WEEKLY_SHIFT_REQ} shifts)"
+            if below_req else
+            f"**{len(members)}** members across **{len(grouped)}** ranks\n"
+            f"\u2705 All members meeting weekly requirement ({WEEKLY_SHIFT_REQ} shifts)"
+        ),
+        color=discord.Color.orange() if below_req else discord.Color.green(),
         timestamp=datetime.now(timezone.utc),
     )
-    embed.set_footer(text=f"{len(members)} members \u2022 ENP Bot v{__version__}")
+
+    for rank_name, rank_members in grouped.items():
+        emoji = RANK_EMOJIS.get(rank_name, "\U0001f46e")
+
+        lines = []
+        for m in rank_members:
+            weekly = m["weekly_shifts"]
+            total = m["total_shifts"]
+            status = "\u2705" if weekly >= WEEKLY_SHIFT_REQ else "\U0001f534"
+            lines.append(f"{status} **{m['username']}**\n\u2003\u2003`Weekly` {weekly}\u2003\u2003`Total` {total}")
+
+        embed.add_field(
+            name=f"{emoji} {rank_name}",
+            value="\n".join(lines),
+            inline=False,
+        )
+
+    embed.set_footer(text=f"ENP Bot v{__version__}")
     await interaction.followup.send(embed=embed)
 
 
