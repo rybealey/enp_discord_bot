@@ -389,38 +389,30 @@ async def cmd_shifts(interaction: discord.Interaction):
     for m in members:
         grouped.setdefault(m["base_rank"], []).append(m)
 
-    # Send a header embed first
-    header = discord.Embed(
-        title="\U0001f4cb Shift Overview",
-        description=f"Showing shifts for **{len(members)}** members across **{len(grouped)}** ranks",
-        color=discord.Color.blurple(),
-        timestamp=datetime.now(timezone.utc),
-    )
-    header.set_footer(text=f"ENP Bot v{__version__}")
-    await interaction.followup.send(embed=header)
-
-    # Send one embed per rank group
+    # Build single embed with all ranks
+    sections = []
     for rank_name, rank_members in grouped.items():
         emoji = RANK_EMOJIS.get(rank_name, "\U0001f46e")
-        color = RANK_COLORS.get(rank_name, discord.Color.blurple())
 
-        lines = []
-        for i, m in enumerate(rank_members, start=1):
+        lines = [f"**{emoji} {rank_name}**"]
+        for m in rank_members:
             weekly = m["weekly_shifts"]
             total = m["total_shifts"]
             lines.append(
-                f"`{i}.` **{m['username']}**\n"
-                f"\u2003\U0001f4c5 Weekly: **{weekly}**\u2003\u2003"
-                f"\U0001f4ca Total: **{total}**"
+                f"\u2003 **{m['username']}** \u2014 "
+                f"\U0001f4c5 `{weekly}` weekly \u2003 "
+                f"\U0001f4ca `{total}` total"
             )
+        sections.append("\n".join(lines))
 
-        embed = discord.Embed(
-            title=f"{emoji}  {rank_name}",
-            description="\n\n".join(lines),
-            color=color,
-        )
-        embed.set_footer(text=f"{len(rank_members)} member{'s' if len(rank_members) != 1 else ''}")
-        await interaction.channel.send(embed=embed)
+    embed = discord.Embed(
+        title="\U0001f4cb Shift Overview",
+        description="\n\n".join(sections),
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text=f"{len(members)} members \u2022 ENP Bot v{__version__}")
+    await interaction.followup.send(embed=embed)
 
 
 @tree.command(name="stats", description="Show bot stats and configuration")
