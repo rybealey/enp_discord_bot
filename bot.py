@@ -1,4 +1,4 @@
-__version__ = "1.0.1"
+__version__ = "1.1.0"
 
 import io
 import os
@@ -310,6 +310,84 @@ async def cmd_graph(interaction: discord.Interaction, action: app_commands.Choic
     embed.set_image(url="attachment://graph.png")
     embed.set_footer(text=f"ENP Bot v{__version__}")
     await interaction.followup.send(embed=embed, file=file)
+
+
+CORP_API_URL = "https://api.anubisrp.com/v2.5/corp/id/1"
+
+# Base rank ordering from highest to lowest (used by /shifts)
+RANK_ORDER = ["Colonel", "Captain", "Lieutenant", "Sergeant", "Corporal", "Private"]
+
+
+def strip_rank_tier(role_name: str) -> str:
+    """Strip tier suffixes (I, II, III, etc.) and whitespace from a rank name."""
+    import re
+    return re.sub(r"\s+[IVX]+$", "", role_name.strip())
+
+
+@tree.command(name="shifts", description="Show weekly and total shifts for all members")
+async def cmd_shifts(interaction: discord.Interaction):
+    await interaction.response.defer()
+
+    headers = {"User-Agent": "ENPBot/1.0"}
+    try:
+        async with bot.http_session.get(CORP_API_URL, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            if resp.status != 200:
+                await interaction.followup.send("Failed to fetch corp data from the API.", ephemeral=True)
+                return
+            data = await resp.json()
+    except Exception:
+        await interaction.followup.send("Failed to fetch corp data from the API.", ephemeral=True)
+        return
+
+    # Flatten members and attach their rank info
+    members = []
+    for rank in data.get("ranks", []):
+        role_id = rank["role_id"]
+        role_name = rank["role_name"]
+        base_rank = strip_rank_tier(role_name)
+        for m in rank.get("members", []):
+            members.append({
+                "username": m["username"],
+                "weekly_shifts": m["weekly_shifts"],
+                "total_shifts": m["total_shifts"],
+                "base_rank": base_rank,
+                "role_id": role_id,
+            })
+
+    if not members:
+        await interaction.followup.send("No members found.", ephemeral=True)
+        return
+
+    # Build rank priority lookup (lower index = higher priority)
+    rank_priority = {r: i for i, r in enumerate(RANK_ORDER)}
+
+    # Sort: highest rank first, then highest weekly_shifts within each rank
+    members.sort(key=lambda m: (rank_priority.get(m["base_rank"], 999), -m["weekly_shifts"]))
+
+    # Build embed with fields per base rank
+    embed = discord.Embed(
+        title="\U0001f4cb Shift Overview",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    current_rank = None
+    field_lines = []
+    for m in members:
+        if m["base_rank"] != current_rank:
+            if current_rank is not None:
+                embed.add_field(name=current_rank, value="\n".join(field_lines), inline=False)
+                field_lines = []
+            current_rank = m["base_rank"]
+        weekly = m["weekly_shifts"]
+        total = m["total_shifts"]
+        field_lines.append(f"**{m['username']}** — {weekly} weekly · {total} total")
+
+    if field_lines:
+        embed.add_field(name=current_rank, value="\n".join(field_lines), inline=False)
+
+    embed.set_footer(text=f"ENP Bot v{__version__}")
+    await interaction.followup.send(embed=embed)
 
 
 @tree.command(name="stats", description="Show bot stats and configuration")
