@@ -1,9 +1,9 @@
-__version__ = "1.1.1"
+__version__ = "1.2.0"
 
 import io
 import os
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 
 import aiohttp
 import discord
@@ -17,6 +17,9 @@ from dotenv import load_dotenv
 from database import (
     init_db,
     insert_events_batch,
+    insert_shift_snapshot,
+    get_shift_snapshot,
+    get_available_snapshot_dates,
     get_recent_events,
     get_events_by_officer,
     get_events_by_perpetrator,
@@ -24,6 +27,8 @@ from database import (
     get_weekly_arrest_leaderboard,
     get_weekly_action_by_officer,
     get_event_count,
+    get_meta,
+    set_meta,
 )
 from api_poller import fetch_livefeed
 
@@ -35,6 +40,7 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 ALLOWED_ROLES = [r.strip() for r in os.getenv("ALLOWED_ROLES", "Admin").split(",")]
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "15"))
+UPDATE_CHANNEL_ID = 1487009310704664747
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -84,6 +90,51 @@ async def before_poll():
 
 
 # ---------------------------------------------------------------------------
+# Weekly shift snapshot task — runs every Sunday at 23:55 UTC
+# ---------------------------------------------------------------------------
+@tasks.loop(time=time(hour=23, minute=55, tzinfo=timezone.utc))
+async def weekly_shift_snapshot():
+    if datetime.now(timezone.utc).weekday() != 6:  # 6 = Sunday
+        return
+
+    headers = {"User-Agent": "ENPBot/1.0"}
+    try:
+        async with bot.http_session.get(CORP_API_URL, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            if resp.status != 200:
+                logger.error("Shift snapshot: API returned status %d", resp.status)
+                return
+            data = await resp.json()
+    except Exception:
+        logger.exception("Shift snapshot: failed to fetch corp data")
+        return
+
+    week_ending = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    members = []
+    for rank in data.get("ranks", []):
+        role_name = rank["role_name"]
+        base_rank = strip_rank_tier(role_name)
+        for m in rank.get("members", []):
+            members.append({
+                "username": m["username"],
+                "rank": base_rank,
+                "weekly_shifts": m["weekly_shifts"],
+                "total_shifts": m["total_shifts"],
+            })
+
+    if members:
+        count = insert_shift_snapshot(members, week_ending)
+        logger.info("Shift snapshot: logged %d members for week ending %s", count, week_ending)
+    else:
+        logger.warning("Shift snapshot: no members found in API response")
+
+
+@weekly_shift_snapshot.before_loop
+async def before_shift_snapshot():
+    await bot.wait_until_ready()
+
+
+# ---------------------------------------------------------------------------
 # Events
 # ---------------------------------------------------------------------------
 @bot.event
@@ -97,9 +148,37 @@ async def on_ready():
 
     if not poll_livefeed.is_running():
         poll_livefeed.start()
+    if not weekly_shift_snapshot.is_running():
+        weekly_shift_snapshot.start()
 
     await tree.sync()
     logger.info("Slash commands synced")
+
+    # Announce new deployment if commit SHA changed
+    commit_sha = os.getenv("RAILWAY_GIT_COMMIT_SHA")
+    commit_msg = os.getenv("RAILWAY_GIT_COMMIT_MESSAGE", "No commit message provided.")
+    if commit_sha:
+        last_sha = get_meta("last_announced_commit")
+        if commit_sha != last_sha:
+            channel = bot.get_channel(UPDATE_CHANNEL_ID)
+            if channel:
+                short_sha = commit_sha[:7]
+                embed = discord.Embed(
+                    title=f"\U0001f680 Software Update \u2013 v{__version__}",
+                    description=(
+                        f"A new update has been deployed.\n\n"
+                        f"**Commit:** `{short_sha}`\n"
+                        f"**Message:** {commit_msg}"
+                    ),
+                    color=discord.Color.green(),
+                    timestamp=datetime.now(timezone.utc),
+                )
+                embed.set_footer(text=f"ENP Bot v{__version__}")
+                await channel.send(embed=embed)
+                logger.info("Announced deployment %s to update channel", short_sha)
+            else:
+                logger.warning("Update channel %d not found", UPDATE_CHANNEL_ID)
+            set_meta("last_announced_commit", commit_sha)
 
 
 # ---------------------------------------------------------------------------
@@ -337,34 +416,72 @@ def strip_rank_tier(role_name: str) -> str:
 
 
 @tree.command(name="shifts", description="Show weekly and total shifts for all members")
-async def cmd_shifts(interaction: discord.Interaction):
+@app_commands.describe(date="Pull from stored logs (YYYY-MM-DD). Leave blank for live data.")
+async def cmd_shifts(interaction: discord.Interaction, date: str | None = None):
     await interaction.response.defer()
 
-    headers = {"User-Agent": "ENPBot/1.0"}
-    try:
-        async with bot.http_session.get(CORP_API_URL, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-            if resp.status != 200:
-                await interaction.followup.send("Failed to fetch corp data from the API.", ephemeral=True)
-                return
-            data = await resp.json()
-    except Exception:
-        await interaction.followup.send("Failed to fetch corp data from the API.", ephemeral=True)
-        return
+    if date is not None:
+        # ------ Historical snapshot from database ------
+        # Validate format
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            await interaction.followup.send(
+                "Invalid date format. Use **YYYY-MM-DD** (e.g. `2026-03-29`).", ephemeral=True
+            )
+            return
 
-    # Flatten members and attach their rank info
-    members = []
-    for rank in data.get("ranks", []):
-        role_id = rank["role_id"]
-        role_name = rank["role_name"]
-        base_rank = strip_rank_tier(role_name)
-        for m in rank.get("members", []):
-            members.append({
-                "username": m["username"],
-                "weekly_shifts": m["weekly_shifts"],
-                "total_shifts": m["total_shifts"],
-                "base_rank": base_rank,
-                "role_id": role_id,
-            })
+        rows = get_shift_snapshot(date)
+        if not rows:
+            available = get_available_snapshot_dates()
+            if available:
+                date_list = ", ".join(f"`{d}`" for d in available[:10])
+                await interaction.followup.send(
+                    f"No shift data found for `{date}`.\n\nAvailable weeks: {date_list}",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.followup.send(
+                    f"No shift data found for `{date}`. No snapshots have been recorded yet.",
+                    ephemeral=True,
+                )
+            return
+
+        members = [
+            {
+                "username": r["username"],
+                "weekly_shifts": r["weekly_shifts"],
+                "total_shifts": r["total_shifts"],
+                "base_rank": r["rank"],
+            }
+            for r in rows
+        ]
+        title_suffix = f" — Week Ending {date}"
+    else:
+        # ------ Live data from API ------
+        headers = {"User-Agent": "ENPBot/1.0"}
+        try:
+            async with bot.http_session.get(CORP_API_URL, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status != 200:
+                    await interaction.followup.send("Failed to fetch corp data from the API.", ephemeral=True)
+                    return
+                data = await resp.json()
+        except Exception:
+            await interaction.followup.send("Failed to fetch corp data from the API.", ephemeral=True)
+            return
+
+        members = []
+        for rank in data.get("ranks", []):
+            role_name = rank["role_name"]
+            base_rank = strip_rank_tier(role_name)
+            for m in rank.get("members", []):
+                members.append({
+                    "username": m["username"],
+                    "weekly_shifts": m["weekly_shifts"],
+                    "total_shifts": m["total_shifts"],
+                    "base_rank": base_rank,
+                })
+        title_suffix = ""
 
     if not members:
         await interaction.followup.send("No members found.", ephemeral=True)
@@ -386,7 +503,7 @@ async def cmd_shifts(interaction: discord.Interaction):
     below_req = sum(1 for m in members if m["weekly_shifts"] < WEEKLY_SHIFT_REQ)
 
     embed = discord.Embed(
-        title="\U0001f4cb Shift Overview",
+        title=f"\U0001f4cb Shift Overview{title_suffix}",
         description=(
             f"**{len(members)}** members across **{len(grouped)}** ranks\n"
             f"\u26a0\ufe0f **{below_req}** below weekly requirement ({WEEKLY_SHIFT_REQ} shifts)"
