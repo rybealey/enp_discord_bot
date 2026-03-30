@@ -125,17 +125,22 @@ def get_events_by_action(action: str, limit: int = 10) -> list[sqlite3.Row]:
 
 
 def get_weekly_arrest_leaderboard(limit: int = 10) -> list[sqlite3.Row]:
-    """Top officers by arrest count for the current week (Monday–Sunday UTC)."""
+    """Top officers by arrest count for the current week (Mon 00:00 UTC)."""
+    now = datetime.now(timezone.utc)
+    days_since_monday = now.weekday()  # 0 = Monday
+    monday_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days_since_monday)
+    monday_ts = int(monday_midnight.timestamp())
+
     conn = get_connection()
     rows = conn.execute(
         """SELECT officer, COUNT(*) as arrest_count
            FROM police_events
            WHERE action = 'arrested'
-             AND timestamp >= CAST(strftime('%%s', 'now', 'weekday 1', '-7 days', 'start of day') AS INTEGER)
+             AND timestamp >= ?
            GROUP BY officer
            ORDER BY arrest_count DESC
            LIMIT ?""",
-        (limit,),
+        (monday_ts, limit),
     ).fetchall()
     conn.close()
     return rows
