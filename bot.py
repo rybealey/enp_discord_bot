@@ -1,4 +1,4 @@
-__version__ = "1.2.1"
+__version__ = "2.0.0"
 
 import io
 import os
@@ -10,6 +10,7 @@ import discord
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 from discord import app_commands
 from discord.ext import tasks
 from dotenv import load_dotenv
@@ -27,6 +28,9 @@ from database import (
     get_weekly_arrest_leaderboard,
     get_weekly_action_by_officer,
     get_event_count,
+    update_shift_cache_and_log,
+    reset_shift_cache,
+    get_weekly_shifts_by_timezone,
     get_meta,
     set_meta,
 )
@@ -135,6 +139,55 @@ async def before_shift_snapshot():
 
 
 # ---------------------------------------------------------------------------
+# Shift tracking task — polls every 10 minutes, logs individual shifts
+# ---------------------------------------------------------------------------
+@tasks.loop(minutes=10)
+async def poll_shifts():
+    """Fetch shift data from the API and log new individual shifts."""
+    # Reset cache at the start of each week (Monday 00:00 UTC)
+    now = datetime.now(timezone.utc)
+    last_reset = get_meta("shift_cache_reset_week")
+    iso_week = now.strftime("%G-W%V")
+    if last_reset != iso_week:
+        reset_shift_cache()
+        set_meta("shift_cache_reset_week", iso_week)
+        logger.info("Shift cache reset for new week %s", iso_week)
+
+    headers = {"User-Agent": "ENPBot/1.0"}
+    try:
+        async with bot.http_session.get(CORP_API_URL, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            if resp.status != 200:
+                logger.warning("Shift poll: API returned status %d", resp.status)
+                return
+            data = await resp.json()
+    except Exception:
+        logger.exception("Shift poll: failed to fetch corp data")
+        return
+
+    members = []
+    for rank in data.get("ranks", []):
+        role_name = rank["role_name"]
+        base_rank = strip_rank_tier(role_name)
+        for m in rank.get("members", []):
+            members.append({
+                "username": m["username"],
+                "rank": base_rank,
+                "weekly_shifts": m["weekly_shifts"],
+                "total_shifts": m["total_shifts"],
+            })
+
+    if members:
+        new_count = update_shift_cache_and_log(members)
+        if new_count > 0:
+            logger.info("Shift poll: logged %d new shift(s)", new_count)
+
+
+@poll_shifts.before_loop
+async def before_poll_shifts():
+    await bot.wait_until_ready()
+
+
+# ---------------------------------------------------------------------------
 # Events
 # ---------------------------------------------------------------------------
 @bot.event
@@ -150,6 +203,8 @@ async def on_ready():
         poll_livefeed.start()
     if not weekly_shift_snapshot.is_running():
         weekly_shift_snapshot.start()
+    if not poll_shifts.is_running():
+        poll_shifts.start()
 
     await tree.sync()
     logger.info("Slash commands synced")
@@ -240,7 +295,7 @@ async def cmd_recent(interaction: discord.Interaction, count: int = 10):
         return
 
     embed = build_event_embed(f"Recent Police Activity", events)
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @tree.command(name="officer", description="Look up recent actions by a specific officer")
@@ -252,7 +307,7 @@ async def cmd_officer(interaction: discord.Interaction, name: str):
         return
 
     embed = build_event_embed(f"Officer Report: {name}", events)
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @tree.command(name="suspect", description="Look up recent police actions against a player")
@@ -264,7 +319,7 @@ async def cmd_suspect(interaction: discord.Interaction, name: str):
         return
 
     embed = build_event_embed(f"Suspect Report: {name}", events)
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @tree.command(name="arrests", description="Show recent arrests")
@@ -277,7 +332,7 @@ async def cmd_arrests(interaction: discord.Interaction, count: int = 10):
         return
 
     embed = build_event_embed("Recent Arrests", events, color=discord.Color.red())
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @tree.command(name="charges", description="Show recent charges")
@@ -290,7 +345,7 @@ async def cmd_charges(interaction: discord.Interaction, count: int = 10):
         return
 
     embed = build_event_embed("Recent Charges", events, color=discord.Color.orange())
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @tree.command(name="pardons", description="Show recent pardons")
@@ -303,7 +358,7 @@ async def cmd_pardons(interaction: discord.Interaction, count: int = 10):
         return
 
     embed = build_event_embed("Recent Pardons", events, color=discord.Color.green())
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @tree.command(name="leaderboard", description="Top officers by arrest count for the current week")
@@ -340,13 +395,25 @@ GRAPH_ACTION_CHOICES = [
     app_commands.Choice(name="Arrests", value="arrested"),
     app_commands.Choice(name="Charges", value="charged"),
     app_commands.Choice(name="Pardons", value="pardoned"),
+    app_commands.Choice(name="Shifts", value="shifts"),
 ]
+
+TZ_COLORS = {
+    "OC": "#3498db",   # blue
+    "EU": "#e67e22",   # orange
+    "NA": "#2ecc71",   # green
+}
+TZ_ORDER = ["OC", "EU", "NA"]
 
 
 @tree.command(name="graph", description="Bar graph of officers by action type for the current week")
 @app_commands.describe(action="Type of police action to graph")
 @app_commands.choices(action=GRAPH_ACTION_CHOICES)
 async def cmd_graph(interaction: discord.Interaction, action: app_commands.Choice[str]):
+    if action.value == "shifts":
+        await _graph_shifts(interaction)
+        return
+
     rows = get_weekly_action_by_officer(action.value, limit=15)
     if not rows:
         await interaction.response.send_message(
@@ -354,7 +421,7 @@ async def cmd_graph(interaction: discord.Interaction, action: app_commands.Choic
         )
         return
 
-    await interaction.response.defer()
+    await interaction.response.defer(ephemeral=True)
 
     officers = [row["officer"] for row in reversed(rows)]
     counts = [row["action_count"] for row in reversed(rows)]
@@ -391,6 +458,71 @@ async def cmd_graph(interaction: discord.Interaction, action: app_commands.Choic
     await interaction.followup.send(embed=embed, file=file)
 
 
+async def _graph_shifts(interaction: discord.Interaction):
+    """Render a stacked horizontal bar graph of shifts broken down by timezone."""
+    data = get_weekly_shifts_by_timezone(limit=15)
+    if not data:
+        await interaction.response.send_message("No shift data recorded this week.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    # Sort users by total shifts ascending (so highest is at the top of the horizontal chart)
+    users = sorted(data.keys(), key=lambda u: sum(data[u].values()))
+
+    fig, ax = plt.subplots(figsize=(10, max(3, len(users) * 0.5)))
+    y_pos = np.arange(len(users))
+    left = np.zeros(len(users))
+
+    for tz in TZ_ORDER:
+        counts = [data[u].get(tz, 0) for u in users]
+        bars = ax.barh(y_pos, counts, left=left, color=TZ_COLORS.get(tz, "#7289da"),
+                       edgecolor="white", linewidth=0.5, label=tz)
+        # Label segments that have a value
+        for bar, count in zip(bars, counts):
+            if count > 0:
+                ax.text(bar.get_x() + bar.get_width() / 2, bar.get_y() + bar.get_height() / 2,
+                        str(count), ha="center", va="center", fontsize=9, fontweight="bold", color="white")
+        left += counts
+
+    # Total labels at the end of each bar
+    totals = [sum(data[u].values()) for u in users]
+    for i, total in enumerate(totals):
+        ax.text(total + 0.3, i, str(total), va="center", fontsize=11, fontweight="bold", color="white")
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(users)
+    ax.set_xlabel("Shifts", fontsize=12, color="white")
+    ax.set_title("Weekly Shifts by Timezone", fontsize=14, fontweight="bold", color="white", pad=12)
+
+    ax.set_facecolor("#2b2d31")
+    fig.set_facecolor("#2b2d31")
+    ax.tick_params(colors="white", labelsize=11)
+    ax.xaxis.label.set_color("white")
+    for spine in ax.spines.values():
+        spine.set_color("#40444b")
+    ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+
+    legend = ax.legend(loc="lower right", fontsize=10, facecolor="#2b2d31", edgecolor="#40444b")
+    for text in legend.get_texts():
+        text.set_color("white")
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.close(fig)
+    buf.seek(0)
+
+    file = discord.File(buf, filename="graph.png")
+    embed = discord.Embed(
+        title="\U0001f4ca Weekly Shifts by Timezone",
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_image(url="attachment://graph.png")
+    embed.set_footer(text=f"ENP Bot v{__version__}")
+    await interaction.followup.send(embed=embed, file=file)
+
+
 CORP_API_URL = "https://api.anubisrp.com/v2.5/corp/id/1"
 
 import re
@@ -418,7 +550,7 @@ def strip_rank_tier(role_name: str) -> str:
 @tree.command(name="shifts", description="Show weekly and total shifts for all members")
 @app_commands.describe(date="Pull from stored logs (YYYY-MM-DD). Leave blank for live data.")
 async def cmd_shifts(interaction: discord.Interaction, date: str | None = None):
-    await interaction.response.defer()
+    await interaction.response.defer(ephemeral=True)
 
     if date is not None:
         # ------ Historical snapshot from database ------
@@ -548,7 +680,7 @@ async def cmd_stats(interaction: discord.Interaction):
     embed.add_field(name="Tracking", value="Arrests, Charges, Pardons", inline=True)
     embed.add_field(name="Version", value=f"v{__version__}", inline=True)
     embed.set_footer(text=f"ENP Bot v{__version__}")
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # ---------------------------------------------------------------------------

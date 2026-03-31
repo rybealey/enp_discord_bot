@@ -46,6 +46,34 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_shift_week    ON shift_snapshots(week_ending);
         CREATE INDEX IF NOT EXISTS idx_shift_user    ON shift_snapshots(username);
 
+        CREATE TABLE IF NOT EXISTS shift_log (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            username      TEXT    NOT NULL,
+            rank          TEXT    NOT NULL,
+            weekly_shifts INTEGER NOT NULL,
+            total_shifts  INTEGER NOT NULL,
+            timestamp     INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_shiftlog_user ON shift_log(username);
+        CREATE INDEX IF NOT EXISTS idx_shiftlog_ts   ON shift_log(timestamp);
+
+        CREATE TABLE IF NOT EXISTS shift_cache (
+            username       TEXT PRIMARY KEY,
+            weekly_shifts  INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS timezones (
+            label      TEXT PRIMARY KEY,
+            start_hour INTEGER NOT NULL,
+            end_hour   INTEGER NOT NULL
+        );
+
+        INSERT OR IGNORE INTO timezones (label, start_hour, end_hour) VALUES
+            ('OC',  6, 14),
+            ('EU', 14, 22),
+            ('NA', 22,  6);
+
         CREATE TABLE IF NOT EXISTS bot_meta (
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
@@ -53,6 +81,14 @@ def init_db():
     """)
     conn.commit()
     conn.close()
+
+
+def _monday_midnight_ts() -> int:
+    """Return the Unix timestamp for Monday 00:00 UTC of the current week."""
+    now = datetime.now(timezone.utc)
+    days_since_monday = now.weekday()
+    monday_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days_since_monday)
+    return int(monday_midnight.timestamp())
 
 
 def insert_events_batch(events: list[dict]) -> int:
@@ -86,39 +122,44 @@ def insert_events_batch(events: list[dict]) -> int:
 
 
 def get_recent_events(limit: int = 10) -> list[sqlite3.Row]:
+    monday_ts = _monday_midnight_ts()
     conn = get_connection()
     rows = conn.execute(
-        "SELECT * FROM police_events ORDER BY timestamp DESC LIMIT ?", (limit,)
+        "SELECT * FROM police_events WHERE timestamp >= ? ORDER BY timestamp DESC LIMIT ?",
+        (monday_ts, limit),
     ).fetchall()
     conn.close()
     return rows
 
 
 def get_events_by_officer(officer: str, limit: int = 10) -> list[sqlite3.Row]:
+    monday_ts = _monday_midnight_ts()
     conn = get_connection()
     rows = conn.execute(
-        "SELECT * FROM police_events WHERE officer LIKE ? ORDER BY timestamp DESC LIMIT ?",
-        (f"%{officer}%", limit),
+        "SELECT * FROM police_events WHERE officer LIKE ? AND timestamp >= ? ORDER BY timestamp DESC LIMIT ?",
+        (f"%{officer}%", monday_ts, limit),
     ).fetchall()
     conn.close()
     return rows
 
 
 def get_events_by_perpetrator(name: str, limit: int = 10) -> list[sqlite3.Row]:
+    monday_ts = _monday_midnight_ts()
     conn = get_connection()
     rows = conn.execute(
-        "SELECT * FROM police_events WHERE perpetrator LIKE ? ORDER BY timestamp DESC LIMIT ?",
-        (f"%{name}%", limit),
+        "SELECT * FROM police_events WHERE perpetrator LIKE ? AND timestamp >= ? ORDER BY timestamp DESC LIMIT ?",
+        (f"%{name}%", monday_ts, limit),
     ).fetchall()
     conn.close()
     return rows
 
 
 def get_events_by_action(action: str, limit: int = 10) -> list[sqlite3.Row]:
+    monday_ts = _monday_midnight_ts()
     conn = get_connection()
     rows = conn.execute(
-        "SELECT * FROM police_events WHERE action LIKE ? ORDER BY timestamp DESC LIMIT ?",
-        (f"%{action}%", limit),
+        "SELECT * FROM police_events WHERE action LIKE ? AND timestamp >= ? ORDER BY timestamp DESC LIMIT ?",
+        (f"%{action}%", monday_ts, limit),
     ).fetchall()
     conn.close()
     return rows
@@ -126,11 +167,7 @@ def get_events_by_action(action: str, limit: int = 10) -> list[sqlite3.Row]:
 
 def get_weekly_arrest_leaderboard(limit: int = 10) -> list[sqlite3.Row]:
     """Top officers by arrest count for the current week (Mon 00:00 UTC)."""
-    now = datetime.now(timezone.utc)
-    days_since_monday = now.weekday()  # 0 = Monday
-    monday_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days_since_monday)
-    monday_ts = int(monday_midnight.timestamp())
-
+    monday_ts = _monday_midnight_ts()
     conn = get_connection()
     rows = conn.execute(
         """SELECT officer, COUNT(*) as arrest_count
@@ -148,11 +185,7 @@ def get_weekly_arrest_leaderboard(limit: int = 10) -> list[sqlite3.Row]:
 
 def get_weekly_action_by_officer(action: str, limit: int = 15) -> list[sqlite3.Row]:
     """Officers ranked by count of a specific action for the current week (Mon 00:00 UTC)."""
-    now = datetime.now(timezone.utc)
-    days_since_monday = now.weekday()  # 0 = Monday
-    monday_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days_since_monday)
-    monday_ts = int(monday_midnight.timestamp())
-
+    monday_ts = _monday_midnight_ts()
     conn = get_connection()
     rows = conn.execute(
         """SELECT officer, COUNT(*) as action_count
@@ -210,6 +243,149 @@ def get_available_snapshot_dates() -> list[str]:
     ).fetchall()
     conn.close()
     return [r["week_ending"] for r in rows]
+
+
+def get_timezones() -> list[sqlite3.Row]:
+    """Return all timezone definitions."""
+    conn = get_connection()
+    rows = conn.execute("SELECT label, start_hour, end_hour FROM timezones ORDER BY start_hour").fetchall()
+    conn.close()
+    return rows
+
+
+def get_current_timezone() -> sqlite3.Row | None:
+    """Return the timezone whose window contains the current GMT hour."""
+    now_hour = datetime.now(timezone.utc).hour
+    conn = get_connection()
+    row = conn.execute(
+        """SELECT label, start_hour, end_hour FROM timezones
+           WHERE (start_hour < end_hour AND ? >= start_hour AND ? < end_hour)
+              OR (start_hour > end_hour AND (? >= start_hour OR ? < end_hour))""",
+        (now_hour, now_hour, now_hour, now_hour),
+    ).fetchone()
+    conn.close()
+    return row
+
+
+def get_shift_cache() -> dict[str, int]:
+    """Return {username: weekly_shifts} from the cache."""
+    conn = get_connection()
+    rows = conn.execute("SELECT username, weekly_shifts FROM shift_cache").fetchall()
+    conn.close()
+    return {r["username"]: r["weekly_shifts"] for r in rows}
+
+
+def update_shift_cache_and_log(members: list[dict]) -> int:
+    """Compare incoming member data against cache, log new shifts, update cache.
+
+    Each member dict must have: username, rank, weekly_shifts.
+    Returns the number of new shift entries logged.
+    """
+    if not members:
+        return 0
+
+    cache = get_shift_cache()
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+
+    new_entries = []
+    for m in members:
+        username = m["username"]
+        current = m["weekly_shifts"]
+        previous = cache.get(username, 0)
+
+        if current > previous:
+            diff = current - previous
+            for i in range(diff):
+                # Each logged shift gets the cumulative count at that point
+                shift_num = previous + i + 1
+                new_entries.append((
+                    username, m["rank"], shift_num, m["total_shifts"], now_ts
+                ))
+
+    conn = get_connection()
+    if new_entries:
+        conn.executemany(
+            """INSERT INTO shift_log (username, rank, weekly_shifts, total_shifts, timestamp)
+               VALUES (?, ?, ?, ?, ?)""",
+            new_entries,
+        )
+    # Upsert all members into cache
+    conn.executemany(
+        """INSERT INTO shift_cache (username, weekly_shifts) VALUES (?, ?)
+           ON CONFLICT(username) DO UPDATE SET weekly_shifts = excluded.weekly_shifts""",
+        [(m["username"], m["weekly_shifts"]) for m in members],
+    )
+    conn.commit()
+    conn.close()
+    return len(new_entries)
+
+
+def reset_shift_cache():
+    """Clear the shift cache (call at the start of each week)."""
+    conn = get_connection()
+    conn.execute("DELETE FROM shift_cache")
+    conn.commit()
+    conn.close()
+
+
+def get_shift_log(username: str | None = None, since_ts: int | None = None) -> list[sqlite3.Row]:
+    """Query shift log entries, optionally filtered by username and/or timestamp."""
+    conditions = []
+    params = []
+    if username:
+        conditions.append("username LIKE ?")
+        params.append(f"%{username}%")
+    if since_ts is not None:
+        conditions.append("timestamp >= ?")
+        params.append(since_ts)
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+    conn = get_connection()
+    rows = conn.execute(
+        f"SELECT * FROM shift_log {where} ORDER BY timestamp DESC", params
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+def get_weekly_shifts_by_timezone(limit: int = 15) -> dict[str, dict[str, int]]:
+    """Return {username: {tz_label: count}} for shifts logged this week.
+
+    Each shift's timestamp hour (UTC) is matched against the timezones table
+    to determine which timezone window it fell in.
+    """
+    monday_ts = _monday_midnight_ts()
+
+    conn = get_connection()
+    tz_rows = conn.execute("SELECT label, start_hour, end_hour FROM timezones").fetchall()
+    logs = conn.execute(
+        "SELECT username, timestamp FROM shift_log WHERE timestamp >= ? ORDER BY timestamp",
+        (monday_ts,),
+    ).fetchall()
+    conn.close()
+
+    # Build timezone lookup
+    tz_defs = [(r["label"], r["start_hour"], r["end_hour"]) for r in tz_rows]
+
+    def classify_hour(hour: int) -> str:
+        for label, start, end in tz_defs:
+            if start < end and start <= hour < end:
+                return label
+            if start > end and (hour >= start or hour < end):
+                return label
+        return "Unknown"
+
+    result: dict[str, dict[str, int]] = {}
+    for row in logs:
+        hour = datetime.fromtimestamp(row["timestamp"], tz=timezone.utc).hour
+        tz_label = classify_hour(hour)
+        user = row["username"]
+        result.setdefault(user, {})
+        result[user][tz_label] = result[user].get(tz_label, 0) + 1
+
+    # Sort by total shifts descending, limit
+    sorted_users = sorted(result.keys(), key=lambda u: sum(result[u].values()), reverse=True)[:limit]
+    return {u: result[u] for u in sorted_users}
 
 
 def get_meta(key: str) -> str | None:
