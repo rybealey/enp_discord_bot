@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.2.0-orange?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.0.0-orange?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square&logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/discord.py-2.3+-5865F2?style=flat-square&logo=discord&logoColor=white" alt="discord.py">
   <img src="https://img.shields.io/badge/database-SQLite-003B57?style=flat-square&logo=sqlite&logoColor=white" alt="SQLite">
@@ -16,38 +16,44 @@
 
 ---
 
-A Discord bot that polls the AnubisRP livefeed API, filters for police activity (arrests, charges, pardons), and stores it in a local SQLite database. It also tracks weekly shift data for all officers and automatically announces new deployments.
+A Discord bot that polls the AnubisRP livefeed API, filters for police activity (arrests, charges, pardons), and stores it in a local SQLite database. It tracks individual shifts with timezone classification (OC/EU/NA), provides weekly analytics, and automatically announces new deployments. All data is scoped to the current week (Monday 00:00 GMT).
 
 ## Features
 
 - **Live Police Feed** — Polls the AnubisRP API every 15 seconds for arrests, charges, and pardons
-- **Officer & Suspect Lookup** — Query activity by officer or player name
-- **Weekly Leaderboard** — Ranked arrest counts reset each Monday (UTC)
-- **Graphing** — Dark-themed bar charts for weekly action breakdowns
+- **Officer & Suspect Lookup** — Query activity by officer or player name (current week only)
+- **Weekly Leaderboard** — Ranked arrest counts reset each Monday (UTC), publicly visible
+- **Graphing** — Dark-themed bar charts for weekly action breakdowns, including timezone-segmented shift graphs
 - **Shift Tracking** — Live and historical shift data per officer, grouped by rank
+- **Individual Shift Logging** — Polls every 10 minutes and logs each new shift with a timestamp for timezone classification
+- **Timezone Classification** — Shifts are categorized into OC (06:00–14:00 GMT), EU (14:00–22:00 GMT), and NA (22:00–06:00 GMT)
 - **Weekly Shift Snapshots** — Automatically logs shift data every Sunday at 23:55 UTC
+- **Ephemeral Responses** — All command responses are private to the invoking user, except `/leaderboard`
 - **Deployment Notifications** — Announces new versions to a designated channel on each Railway deploy
 
 ## Commands
 
-All responses are displayed as color-coded Discord embeds with relative timestamps.
+All responses are ephemeral (only visible to you) except `/leaderboard`, which is public. Data is scoped to the current week (Monday 00:00 GMT onward).
 
-| Command | Description |
-|---------|-------------|
-| `/recent [count]` | Show the most recent police events (default: 10, max: 25) |
-| `/officer <name>` | Look up recent actions by a specific officer |
-| `/suspect <name>` | Look up recent police actions against a specific player |
-| `/arrests [count]` | Show recent arrests (red embed) |
-| `/charges [count]` | Show recent charges (orange embed) |
-| `/pardons [count]` | Show recent pardons (green embed) |
-| `/leaderboard [count]` | Top officers by weekly arrest count (gold embed) |
-| `/graph <action>` | Bar graph of officers by action type for the current week |
-| `/shifts [date]` | Live shift overview, or historical data by date (`YYYY-MM-DD`) |
-| `/stats` | Bot version, event totals, and configuration |
+| Command | Description | Visibility |
+|---------|-------------|------------|
+| `/recent [count]` | Police events this week (default: 10, max: 25) | Ephemeral |
+| `/officer <name>` | Officer activity this week | Ephemeral |
+| `/suspect <name>` | Player activity this week | Ephemeral |
+| `/arrests [count]` | Arrests this week (red embed) | Ephemeral |
+| `/charges [count]` | Charges this week (orange embed) | Ephemeral |
+| `/pardons [count]` | Pardons this week (green embed) | Ephemeral |
+| `/leaderboard [count]` | Top officers by weekly arrest count (gold embed) | **Public** |
+| `/graph <action>` | Bar graph by action type or shifts by timezone | Ephemeral |
+| `/shifts [date]` | Live shift overview, or historical data by date (`YYYY-MM-DD`) | Ephemeral |
+| `/stats` | Bot version, event totals, and configuration | Ephemeral |
 
 ### `/graph`
 
-Accepts a dropdown choice of **Arrests**, **Charges**, or **Pardons** and renders a horizontal bar chart styled to match Discord's dark theme, embedded as an image.
+Accepts a dropdown choice of **Arrests**, **Charges**, **Pardons**, or **Shifts** and renders a horizontal bar chart styled to match Discord's dark theme, embedded as an image.
+
+- **Arrests / Charges / Pardons** — Single-color bar chart ranked by officer count
+- **Shifts** — Stacked bar chart with each bar segmented by timezone (OC = blue, EU = orange, NA = green), showing which time windows each officer works in
 
 ### `/shifts`
 
@@ -59,6 +65,7 @@ Accepts a dropdown choice of **Arrests**, **Charges**, or **Pardons** and render
 | Task | Schedule | Description |
 |------|----------|-------------|
 | `poll_livefeed` | Every 15s (configurable) | Fetches the livefeed API and stores new police events |
+| `poll_shifts` | Every 10 minutes | Polls the corp API, detects new shifts, and logs each one with a UTC timestamp |
 | `weekly_shift_snapshot` | Sundays at 23:55 UTC | Snapshots each officer's weekly and total shifts to the database |
 
 ## Deployment Notifications
@@ -168,6 +175,32 @@ Railway will automatically build and deploy on push. The bot runs as a worker pr
 | `total_shifts` | `INTEGER` | Cumulative shift count |
 | `week_ending` | `TEXT` | Snapshot date (`YYYY-MM-DD`) |
 | `created_at` | `TEXT` | Row insertion time |
+
+### `shift_log`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `INTEGER` | Auto-incrementing primary key |
+| `username` | `TEXT` | Officer username |
+| `rank` | `TEXT` | Base rank (tier stripped) |
+| `weekly_shifts` | `INTEGER` | Cumulative weekly count at time of log |
+| `total_shifts` | `INTEGER` | Cumulative total count at time of log |
+| `timestamp` | `INTEGER` | Unix timestamp (UTC) when the shift was detected |
+
+### `shift_cache`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `username` | `TEXT` | Officer username (primary key) |
+| `weekly_shifts` | `INTEGER` | Last-known weekly shift count |
+
+### `timezones`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `label` | `TEXT` | Timezone label: `OC`, `EU`, or `NA` (primary key) |
+| `start_hour` | `INTEGER` | Start hour in GMT (inclusive) |
+| `end_hour` | `INTEGER` | End hour in GMT (exclusive) |
 
 ### `bot_meta`
 
