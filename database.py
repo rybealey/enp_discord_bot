@@ -80,6 +80,14 @@ def init_db():
         );
     """)
     conn.commit()
+
+    # One-time migration: clear stale shift data from pre-v2.0.0
+    if not conn.execute("SELECT 1 FROM bot_meta WHERE key = 'shift_log_v2_reset'").fetchone():
+        conn.execute("DELETE FROM shift_log")
+        conn.execute("DELETE FROM shift_cache")
+        conn.execute("INSERT INTO bot_meta (key, value) VALUES ('shift_log_v2_reset', '1')")
+        conn.commit()
+
     conn.close()
 
 
@@ -291,8 +299,12 @@ def update_shift_cache_and_log(members: list[dict]) -> int:
     for m in members:
         username = m["username"]
         current = m["weekly_shifts"]
-        previous = cache.get(username, 0)
 
+        if username not in cache:
+            # First time seeing this user — seed cache only, don't log
+            continue
+
+        previous = cache[username]
         if current > previous:
             diff = current - previous
             for i in range(diff):
