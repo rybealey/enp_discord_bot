@@ -2,7 +2,9 @@ __version__ = "2.0.0"
 
 import io
 import os
+import re
 import logging
+from collections import OrderedDict
 from datetime import datetime, time, timezone
 
 import aiohttp
@@ -45,6 +47,20 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 ALLOWED_ROLES = [r.strip() for r in os.getenv("ALLOWED_ROLES", "Admin").split(",")]
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "15"))
 UPDATE_CHANNEL_ID = 1487009310704664747
+CORP_API_URL = "https://api.anubisrp.com/v2.5/corp/id/1"
+WEEKLY_SHIFT_REQ = 40
+
+# Base rank ordering from highest to lowest (used by /shifts)
+RANK_ORDER = ["Colonel", "Captain", "Lieutenant", "Sergeant", "Corporal", "Private"]
+
+RANK_EMOJIS = {
+    "Colonel": "\u2B50",       # ⭐
+    "Captain": "\U0001f396",   # 🎖
+    "Lieutenant": "\U0001f6e1",# 🛡
+    "Sergeant": "\u2694\ufe0f",# ⚔️
+    "Corporal": "\U0001f6e1",  # 🛡
+    "Private": "\U0001f46e",   # 👮
+}
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -239,6 +255,11 @@ async def on_ready():
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+def strip_rank_tier(role_name: str) -> str:
+    """Strip tier suffixes (I, II, III, etc.) and whitespace from a rank name."""
+    return re.sub(r"\s+[IVX]+$", "", role_name.strip())
+
+
 ACTION_COLORS = {
     "arrested": discord.Color.red(),
     "charged": discord.Color.orange(),
@@ -282,8 +303,29 @@ def build_event_embed(title: str, events: list, color: discord.Color = None) -> 
     return embed
 
 
+GRAPH_COLORS = {
+    "arrested": "#e74c3c",
+    "charged": "#e67e22",
+    "pardoned": "#2ecc71",
+}
+
+GRAPH_ACTION_CHOICES = [
+    app_commands.Choice(name="Arrests", value="arrested"),
+    app_commands.Choice(name="Charges", value="charged"),
+    app_commands.Choice(name="Pardons", value="pardoned"),
+    app_commands.Choice(name="Shifts", value="shifts"),
+]
+
+TZ_COLORS = {
+    "OC": "#3498db",   # blue
+    "EU": "#e67e22",   # orange
+    "NA": "#2ecc71",   # green
+}
+TZ_ORDER = ["OC", "EU", "NA"]
+
+
 # ---------------------------------------------------------------------------
-# Slash Commands
+# Slash Commands — Police Activity
 # ---------------------------------------------------------------------------
 @tree.command(name="recent", description="Show the most recent police events")
 @app_commands.describe(count="Number of events to show (default: 10, max: 25)")
@@ -361,6 +403,9 @@ async def cmd_pardons(interaction: discord.Interaction, count: int = 10):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+# ---------------------------------------------------------------------------
+# Slash Commands — Shifts & Leaderboard
+# ---------------------------------------------------------------------------
 @tree.command(name="leaderboard", description="Top officers by arrest count for the current week")
 @app_commands.describe(count="Number of officers to show (default: 10, max: 25)")
 async def cmd_leaderboard(interaction: discord.Interaction, count: int = 10):
@@ -385,27 +430,120 @@ async def cmd_leaderboard(interaction: discord.Interaction, count: int = 10):
     await interaction.response.send_message(embed=embed)
 
 
-GRAPH_COLORS = {
-    "arrested": "#e74c3c",
-    "charged": "#e67e22",
-    "pardoned": "#2ecc71",
-}
+@tree.command(name="shifts", description="Show weekly and total shifts for all members")
+@app_commands.describe(date="Pull from stored logs (YYYY-MM-DD). Leave blank for live data.")
+async def cmd_shifts(interaction: discord.Interaction, date: str | None = None):
+    await interaction.response.defer(ephemeral=True)
 
-GRAPH_ACTION_CHOICES = [
-    app_commands.Choice(name="Arrests", value="arrested"),
-    app_commands.Choice(name="Charges", value="charged"),
-    app_commands.Choice(name="Pardons", value="pardoned"),
-    app_commands.Choice(name="Shifts", value="shifts"),
-]
+    if date is not None:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            await interaction.followup.send(
+                "Invalid date format. Use **YYYY-MM-DD** (e.g. `2026-03-29`).", ephemeral=True
+            )
+            return
 
-TZ_COLORS = {
-    "OC": "#3498db",   # blue
-    "EU": "#e67e22",   # orange
-    "NA": "#2ecc71",   # green
-}
-TZ_ORDER = ["OC", "EU", "NA"]
+        rows = get_shift_snapshot(date)
+        if not rows:
+            available = get_available_snapshot_dates()
+            if available:
+                date_list = ", ".join(f"`{d}`" for d in available[:10])
+                await interaction.followup.send(
+                    f"No shift data found for `{date}`.\n\nAvailable weeks: {date_list}",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.followup.send(
+                    f"No shift data found for `{date}`. No snapshots have been recorded yet.",
+                    ephemeral=True,
+                )
+            return
+
+        members = [
+            {
+                "username": r["username"],
+                "weekly_shifts": r["weekly_shifts"],
+                "total_shifts": r["total_shifts"],
+                "base_rank": r["rank"],
+            }
+            for r in rows
+        ]
+        title_suffix = f" \u2014 Week Ending {date}"
+    else:
+        headers = {"User-Agent": "ENPBot/1.0"}
+        try:
+            async with bot.http_session.get(CORP_API_URL, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status != 200:
+                    await interaction.followup.send("Failed to fetch corp data from the API.", ephemeral=True)
+                    return
+                data = await resp.json()
+        except Exception:
+            await interaction.followup.send("Failed to fetch corp data from the API.", ephemeral=True)
+            return
+
+        members = []
+        for rank in data.get("ranks", []):
+            role_name = rank["role_name"]
+            base_rank = strip_rank_tier(role_name)
+            for m in rank.get("members", []):
+                members.append({
+                    "username": m["username"],
+                    "weekly_shifts": m["weekly_shifts"],
+                    "total_shifts": m["total_shifts"],
+                    "base_rank": base_rank,
+                })
+        title_suffix = ""
+
+    if not members:
+        await interaction.followup.send("No members found.", ephemeral=True)
+        return
+
+    rank_priority = {r: i for i, r in enumerate(RANK_ORDER)}
+    members.sort(key=lambda m: (rank_priority.get(m["base_rank"], 999), -m["weekly_shifts"]))
+
+    grouped = OrderedDict()
+    for m in members:
+        grouped.setdefault(m["base_rank"], []).append(m)
+
+    below_req = sum(1 for m in members if m["weekly_shifts"] < WEEKLY_SHIFT_REQ)
+
+    embed = discord.Embed(
+        title=f"\U0001f4cb Shift Overview{title_suffix}",
+        description=(
+            f"**{len(members)}** members across **{len(grouped)}** ranks\n"
+            f"\u26a0\ufe0f **{below_req}** below weekly requirement ({WEEKLY_SHIFT_REQ} shifts)"
+            if below_req else
+            f"**{len(members)}** members across **{len(grouped)}** ranks\n"
+            f"\u2705 All members meeting weekly requirement ({WEEKLY_SHIFT_REQ} shifts)"
+        ),
+        color=discord.Color.orange() if below_req else discord.Color.green(),
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    for rank_name, rank_members in grouped.items():
+        emoji = RANK_EMOJIS.get(rank_name, "\U0001f46e")
+
+        lines = []
+        for m in rank_members:
+            weekly = m["weekly_shifts"]
+            total = m["total_shifts"]
+            status = "\u2705" if weekly >= WEEKLY_SHIFT_REQ else "\U0001f534"
+            lines.append(f"{status} **{m['username']}**\n\u2003\u2003`Weekly` {weekly}\u2003\u2003`Total` {total}")
+
+        embed.add_field(
+            name=f"{emoji} {rank_name}",
+            value="\n".join(lines),
+            inline=False,
+        )
+
+    embed.set_footer(text=f"ENP Bot v{__version__}")
+    await interaction.followup.send(embed=embed)
 
 
+# ---------------------------------------------------------------------------
+# Slash Commands — Graphs
+# ---------------------------------------------------------------------------
 @tree.command(name="graph", description="Bar graph of officers by action type for the current week")
 @app_commands.describe(action="Type of police action to graph")
 @app_commands.choices(action=GRAPH_ACTION_CHOICES)
@@ -467,7 +605,6 @@ async def _graph_shifts(interaction: discord.Interaction):
 
     await interaction.response.defer(ephemeral=True)
 
-    # Sort users by total shifts ascending (so highest is at the top of the horizontal chart)
     users = sorted(data.keys(), key=lambda u: sum(data[u].values()))
 
     fig, ax = plt.subplots(figsize=(10, max(3, len(users) * 0.5)))
@@ -478,14 +615,12 @@ async def _graph_shifts(interaction: discord.Interaction):
         counts = [data[u].get(tz, 0) for u in users]
         bars = ax.barh(y_pos, counts, left=left, color=TZ_COLORS.get(tz, "#7289da"),
                        edgecolor="white", linewidth=0.5, label=tz)
-        # Label segments that have a value
         for bar, count in zip(bars, counts):
             if count > 0:
                 ax.text(bar.get_x() + bar.get_width() / 2, bar.get_y() + bar.get_height() / 2,
                         str(count), ha="center", va="center", fontsize=9, fontweight="bold", color="white")
         left += counts
 
-    # Total labels at the end of each bar
     totals = [sum(data[u].values()) for u in users]
     for i, total in enumerate(totals):
         ax.text(total + 0.3, i, str(total), va="center", fontsize=11, fontweight="bold", color="white")
@@ -523,148 +658,52 @@ async def _graph_shifts(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed, file=file)
 
 
-CORP_API_URL = "https://api.anubisrp.com/v2.5/corp/id/1"
-
-import re
-
-# Base rank ordering from highest to lowest (used by /shifts)
-RANK_ORDER = ["Colonel", "Captain", "Lieutenant", "Sergeant", "Corporal", "Private"]
-
-RANK_EMOJIS = {
-    "Colonel": "\u2B50",       # ⭐
-    "Captain": "\U0001f396",   # 🎖
-    "Lieutenant": "\U0001f6e1",# 🛡
-    "Sergeant": "\u2694\ufe0f",# ⚔️
-    "Corporal": "\U0001f6e1",  # 🛡
-    "Private": "\U0001f46e",   # 👮
-}
-
-WEEKLY_SHIFT_REQ = 40
-
-
-def strip_rank_tier(role_name: str) -> str:
-    """Strip tier suffixes (I, II, III, etc.) and whitespace from a rank name."""
-    return re.sub(r"\s+[IVX]+$", "", role_name.strip())
-
-
-@tree.command(name="shifts", description="Show weekly and total shifts for all members")
-@app_commands.describe(date="Pull from stored logs (YYYY-MM-DD). Leave blank for live data.")
-async def cmd_shifts(interaction: discord.Interaction, date: str | None = None):
-    await interaction.response.defer(ephemeral=True)
-
-    if date is not None:
-        # ------ Historical snapshot from database ------
-        # Validate format
-        try:
-            datetime.strptime(date, "%Y-%m-%d")
-        except ValueError:
-            await interaction.followup.send(
-                "Invalid date format. Use **YYYY-MM-DD** (e.g. `2026-03-29`).", ephemeral=True
-            )
-            return
-
-        rows = get_shift_snapshot(date)
-        if not rows:
-            available = get_available_snapshot_dates()
-            if available:
-                date_list = ", ".join(f"`{d}`" for d in available[:10])
-                await interaction.followup.send(
-                    f"No shift data found for `{date}`.\n\nAvailable weeks: {date_list}",
-                    ephemeral=True,
-                )
-            else:
-                await interaction.followup.send(
-                    f"No shift data found for `{date}`. No snapshots have been recorded yet.",
-                    ephemeral=True,
-                )
-            return
-
-        members = [
-            {
-                "username": r["username"],
-                "weekly_shifts": r["weekly_shifts"],
-                "total_shifts": r["total_shifts"],
-                "base_rank": r["rank"],
-            }
-            for r in rows
-        ]
-        title_suffix = f" — Week Ending {date}"
-    else:
-        # ------ Live data from API ------
-        headers = {"User-Agent": "ENPBot/1.0"}
-        try:
-            async with bot.http_session.get(CORP_API_URL, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status != 200:
-                    await interaction.followup.send("Failed to fetch corp data from the API.", ephemeral=True)
-                    return
-                data = await resp.json()
-        except Exception:
-            await interaction.followup.send("Failed to fetch corp data from the API.", ephemeral=True)
-            return
-
-        members = []
-        for rank in data.get("ranks", []):
-            role_name = rank["role_name"]
-            base_rank = strip_rank_tier(role_name)
-            for m in rank.get("members", []):
-                members.append({
-                    "username": m["username"],
-                    "weekly_shifts": m["weekly_shifts"],
-                    "total_shifts": m["total_shifts"],
-                    "base_rank": base_rank,
-                })
-        title_suffix = ""
-
-    if not members:
-        await interaction.followup.send("No members found.", ephemeral=True)
-        return
-
-    # Build rank priority lookup (lower index = higher priority)
-    rank_priority = {r: i for i, r in enumerate(RANK_ORDER)}
-
-    # Sort: highest rank first, then highest weekly_shifts within each rank
-    members.sort(key=lambda m: (rank_priority.get(m["base_rank"], 999), -m["weekly_shifts"]))
-
-    # Group members by base rank
-    from collections import OrderedDict
-    grouped = OrderedDict()
-    for m in members:
-        grouped.setdefault(m["base_rank"], []).append(m)
-
-    # Build embed using fields for clean rank sections
-    below_req = sum(1 for m in members if m["weekly_shifts"] < WEEKLY_SHIFT_REQ)
-
+# ---------------------------------------------------------------------------
+# Slash Commands — Utility
+# ---------------------------------------------------------------------------
+@tree.command(name="help", description="Show a guide to all available bot commands")
+async def cmd_help(interaction: discord.Interaction):
     embed = discord.Embed(
-        title=f"\U0001f4cb Shift Overview{title_suffix}",
-        description=(
-            f"**{len(members)}** members across **{len(grouped)}** ranks\n"
-            f"\u26a0\ufe0f **{below_req}** below weekly requirement ({WEEKLY_SHIFT_REQ} shifts)"
-            if below_req else
-            f"**{len(members)}** members across **{len(grouped)}** ranks\n"
-            f"\u2705 All members meeting weekly requirement ({WEEKLY_SHIFT_REQ} shifts)"
-        ),
-        color=discord.Color.orange() if below_req else discord.Color.green(),
+        title="\U0001f4d6 ENP Bot \u2014 Command Guide",
+        description="All data is scoped to the **current week** (Monday 00:00 GMT). Responses are ephemeral (only visible to you) unless noted.",
+        color=discord.Color.blurple(),
         timestamp=datetime.now(timezone.utc),
     )
 
-    for rank_name, rank_members in grouped.items():
-        emoji = RANK_EMOJIS.get(rank_name, "\U0001f46e")
+    embed.add_field(
+        name="\U0001f6a8 Police Activity",
+        value=(
+            "**/recent** `[count]` \u2014 Latest police events\n"
+            "**/arrests** `[count]` \u2014 Recent arrests\n"
+            "**/charges** `[count]` \u2014 Recent charges\n"
+            "**/pardons** `[count]` \u2014 Recent pardons\n"
+            "**/officer** `<name>` \u2014 Actions by a specific officer\n"
+            "**/suspect** `<name>` \u2014 Actions against a specific player"
+        ),
+        inline=False,
+    )
 
-        lines = []
-        for m in rank_members:
-            weekly = m["weekly_shifts"]
-            total = m["total_shifts"]
-            status = "\u2705" if weekly >= WEEKLY_SHIFT_REQ else "\U0001f534"
-            lines.append(f"{status} **{m['username']}**\n\u2003\u2003`Weekly` {weekly}\u2003\u2003`Total` {total}")
+    embed.add_field(
+        name="\U0001f4cb Shifts & Leaderboard",
+        value=(
+            "**/shifts** `[date]` \u2014 Weekly shift overview (live or historical)\n"
+            "**/leaderboard** `[count]` \u2014 Top officers by arrests *(visible to all)*\n"
+            "**/graph** `<action>` \u2014 Bar chart of weekly activity (Arrests, Charges, Pardons, Shifts)"
+        ),
+        inline=False,
+    )
 
-        embed.add_field(
-            name=f"{emoji} {rank_name}",
-            value="\n".join(lines),
-            inline=False,
-        )
+    embed.add_field(
+        name="\u2699\ufe0f Utility",
+        value=(
+            "**/stats** \u2014 Bot stats and configuration\n"
+            "**/help** \u2014 This message"
+        ),
+        inline=False,
+    )
 
     embed.set_footer(text=f"ENP Bot v{__version__}")
-    await interaction.followup.send(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @tree.command(name="stats", description="Show bot stats and configuration")

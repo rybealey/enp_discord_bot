@@ -33,19 +33,32 @@ A Discord bot that polls the AnubisRP livefeed API, filters for police activity 
 
 ## Commands
 
-All responses are ephemeral (only visible to you) except `/leaderboard`, which is public. Data is scoped to the current week (Monday 00:00 GMT onward).
+All responses are ephemeral (only visible to you) except `/leaderboard`, which is public. Data is scoped to the current week (Monday 00:00 GMT onward). Use `/help` in Discord for a quick reference.
+
+### Police Activity
 
 | Command | Description | Visibility |
 |---------|-------------|------------|
 | `/recent [count]` | Police events this week (default: 10, max: 25) | Ephemeral |
 | `/officer <name>` | Officer activity this week | Ephemeral |
 | `/suspect <name>` | Player activity this week | Ephemeral |
-| `/arrests [count]` | Arrests this week (red embed) | Ephemeral |
-| `/charges [count]` | Charges this week (orange embed) | Ephemeral |
-| `/pardons [count]` | Pardons this week (green embed) | Ephemeral |
-| `/leaderboard [count]` | Top officers by weekly arrest count (gold embed) | **Public** |
-| `/graph <action>` | Bar graph by action type or shifts by timezone | Ephemeral |
+| `/arrests [count]` | Arrests this week | Ephemeral |
+| `/charges [count]` | Charges this week | Ephemeral |
+| `/pardons [count]` | Pardons this week | Ephemeral |
+
+### Shifts & Leaderboard
+
+| Command | Description | Visibility |
+|---------|-------------|------------|
 | `/shifts [date]` | Live shift overview, or historical data by date (`YYYY-MM-DD`) | Ephemeral |
+| `/leaderboard [count]` | Top officers by weekly arrest count | **Public** |
+| `/graph <action>` | Bar graph by action type or shifts by timezone | Ephemeral |
+
+### Utility
+
+| Command | Description | Visibility |
+|---------|-------------|------------|
+| `/help` | Command guide with usage info | Ephemeral |
 | `/stats` | Bot version, event totals, and configuration | Ephemeral |
 
 ### `/graph`
