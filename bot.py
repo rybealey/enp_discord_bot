@@ -1,4 +1,4 @@
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 import io
 import os
@@ -46,7 +46,7 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 ALLOWED_ROLES = [r.strip() for r in os.getenv("ALLOWED_ROLES", "Admin").split(",")]
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "15"))
-UPDATE_CHANNEL_ID = 1487009310704664747
+LIVEFEED_CHANNEL_ID = 1491507818975461576
 CORP_API_URL = "https://api.anubisrp.com/v2.5/corp/id/1"
 WEEKLY_SHIFT_REQ = 40
 
@@ -99,9 +99,20 @@ async def poll_livefeed():
     """Fetch the livefeed and store new police events in the database."""
     events = await fetch_livefeed(bot.http_session)
     if events:
-        new_count = insert_events_batch(events)
-        if new_count > 0:
-            logger.info("Stored %d new police events", new_count)
+        new_events = insert_events_batch(events)
+        if new_events:
+            logger.info("Stored %d new police events", len(new_events))
+            channel = bot.get_channel(LIVEFEED_CHANNEL_ID)
+            if channel:
+                for event in new_events:
+                    embed = discord.Embed(
+                        title=f"{ACTION_ICONS.get(event['action'], '\U0001f46e')} {event['action'].title()}",
+                        description=format_event_line(event),
+                        color=ACTION_COLORS.get(event["action"], discord.Color.blurple()),
+                        timestamp=datetime.now(timezone.utc),
+                    )
+                    embed.set_footer(text=f"ENP Bot v{__version__}")
+                    await channel.send(embed=embed)
 
 
 @poll_livefeed.before_loop
@@ -231,7 +242,7 @@ async def on_ready():
     if commit_sha:
         last_sha = get_meta("last_announced_commit")
         if commit_sha != last_sha:
-            channel = bot.get_channel(UPDATE_CHANNEL_ID)
+            channel = bot.get_channel(LIVEFEED_CHANNEL_ID)
             if channel:
                 short_sha = commit_sha[:7]
                 embed = discord.Embed(
@@ -248,7 +259,7 @@ async def on_ready():
                 await channel.send(embed=embed)
                 logger.info("Announced deployment %s to update channel", short_sha)
             else:
-                logger.warning("Update channel %d not found", UPDATE_CHANNEL_ID)
+                logger.warning("Update channel %d not found", LIVEFEED_CHANNEL_ID)
             set_meta("last_announced_commit", commit_sha)
 
 
@@ -276,7 +287,7 @@ ACTION_ICONS = {
 def format_event_line(row) -> str:
     """Format a single event as a compact line for embed descriptions."""
     icon = ACTION_ICONS.get(row["action"], "\U0001f46e")
-    ts = f"<t:{row['timestamp']}:R>"
+    ts = f"<t:{row['timestamp']}:f>"
     if row["action"] == "pardoned":
         return f"{icon} **{row['officer']}** pardoned **{row['perpetrator']}** of all crimes {ts}"
     details = f" — {row['details']}" if row["details"] else ""
@@ -410,15 +421,41 @@ async def cmd_pardons(interaction: discord.Interaction, count: int = 10):
 @app_commands.describe(count="Number of officers to show (default: 10, max: 25)")
 async def cmd_leaderboard(interaction: discord.Interaction, count: int = 10):
     count = min(count, 25)
-    rows = get_weekly_arrest_leaderboard(limit=count)
-    if not rows:
-        await interaction.response.send_message("No arrests recorded this week.", ephemeral=True)
+    await interaction.response.defer()
+
+    # Fetch all current corp members from the API
+    all_members: set[str] = set()
+    headers = {"User-Agent": "ENPBot/1.0"}
+    try:
+        async with bot.http_session.get(CORP_API_URL, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                for rank in data.get("ranks", []):
+                    for m in rank.get("members", []):
+                        all_members.add(m["username"])
+    except Exception:
+        logger.warning("Leaderboard: failed to fetch corp members, showing DB-only results")
+
+    # Get arrest counts from the database
+    rows = get_weekly_arrest_leaderboard(limit=0)
+    arrest_counts = {row["officer"]: row["arrest_count"] for row in rows}
+
+    # Merge: add any corp members not already in the arrest data
+    for member in all_members:
+        if member not in arrest_counts:
+            arrest_counts[member] = 0
+
+    # Sort by arrest count descending, then alphabetically
+    sorted_officers = sorted(arrest_counts.items(), key=lambda x: (-x[1], x[0]))[:count]
+
+    if not sorted_officers:
+        await interaction.followup.send("No officers found.", ephemeral=True)
         return
 
     lines = []
-    for rank, row in enumerate(rows, start=1):
+    for rank, (officer, arrests) in enumerate(sorted_officers, start=1):
         medal = {1: "\U0001f947", 2: "\U0001f948", 3: "\U0001f949"}.get(rank, f"`{rank}.`")
-        lines.append(f"{medal} **{row['officer']}** — {row['arrest_count']} arrest{'s' if row['arrest_count'] != 1 else ''}")
+        lines.append(f"{medal} **{officer}** — {arrests} arrest{'s' if arrests != 1 else ''}")
 
     embed = discord.Embed(
         title="\U0001f3c6 Weekly Arrest Leaderboard",
@@ -427,7 +464,7 @@ async def cmd_leaderboard(interaction: discord.Interaction, count: int = 10):
         timestamp=datetime.now(timezone.utc),
     )
     embed.set_footer(text=f"ENP Bot v{__version__}")
-    await interaction.response.send_message(embed=embed)
+    await interaction.followup.send(embed=embed)
 
 
 @tree.command(name="shifts", description="Show weekly and total shifts for all members")

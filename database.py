@@ -99,34 +99,43 @@ def _monday_midnight_ts() -> int:
     return int(monday_midnight.timestamp())
 
 
-def insert_events_batch(events: list[dict]) -> int:
-    """Insert new police events in a batch, skipping duplicates. Returns count of new rows."""
+def insert_events_batch(events: list[dict]) -> list[dict]:
+    """Insert new police events in a batch, skipping duplicates. Returns list of newly inserted events."""
     if not events:
-        return 0
+        return []
 
     conn = get_connection()
-    before = conn.execute("SELECT COUNT(*) FROM police_events").fetchone()[0]
-    conn.executemany(
-        """INSERT OR IGNORE INTO police_events
-           (id, officer, perpetrator, action, details, raw_text, timestamp)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        [
-            (
-                e["id"],
-                e["officer"],
-                e["perpetrator"],
-                e["action"],
-                e.get("details"),
-                e["raw_text"],
-                e["timestamp"],
-            )
-            for e in events
-        ],
-    )
-    conn.commit()
-    after = conn.execute("SELECT COUNT(*) FROM police_events").fetchone()[0]
+    incoming_ids = [e["id"] for e in events]
+    placeholders = ",".join("?" for _ in incoming_ids)
+    existing = {
+        row[0]
+        for row in conn.execute(
+            f"SELECT id FROM police_events WHERE id IN ({placeholders})",
+            incoming_ids,
+        ).fetchall()
+    }
+    new_events = [e for e in events if e["id"] not in existing]
+    if new_events:
+        conn.executemany(
+            """INSERT OR IGNORE INTO police_events
+               (id, officer, perpetrator, action, details, raw_text, timestamp)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            [
+                (
+                    e["id"],
+                    e["officer"],
+                    e["perpetrator"],
+                    e["action"],
+                    e.get("details"),
+                    e["raw_text"],
+                    e["timestamp"],
+                )
+                for e in new_events
+            ],
+        )
+        conn.commit()
     conn.close()
-    return after - before
+    return new_events
 
 
 def get_recent_events(limit: int = 10) -> list[sqlite3.Row]:
@@ -174,19 +183,20 @@ def get_events_by_action(action: str, limit: int = 10) -> list[sqlite3.Row]:
 
 
 def get_weekly_arrest_leaderboard(limit: int = 10) -> list[sqlite3.Row]:
-    """Top officers by arrest count for the current week (Mon 00:00 UTC)."""
+    """Top officers by arrest count for the current week (Mon 00:00 UTC). Pass limit=0 for all."""
     monday_ts = _monday_midnight_ts()
     conn = get_connection()
-    rows = conn.execute(
-        """SELECT officer, COUNT(*) as arrest_count
-           FROM police_events
-           WHERE action = 'arrested'
-             AND timestamp >= ?
-           GROUP BY officer
-           ORDER BY arrest_count DESC
-           LIMIT ?""",
-        (monday_ts, limit),
-    ).fetchall()
+    query = """SELECT officer, COUNT(*) as arrest_count
+               FROM police_events
+               WHERE action = 'arrested'
+                 AND timestamp >= ?
+               GROUP BY officer
+               ORDER BY arrest_count DESC"""
+    if limit > 0:
+        query += " LIMIT ?"
+        rows = conn.execute(query, (monday_ts, limit)).fetchall()
+    else:
+        rows = conn.execute(query, (monday_ts,)).fetchall()
     conn.close()
     return rows
 
