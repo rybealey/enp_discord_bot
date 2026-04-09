@@ -46,7 +46,8 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 ALLOWED_ROLES = [r.strip() for r in os.getenv("ALLOWED_ROLES", "Admin").split(",")]
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "15"))
-LIVEFEED_CHANNEL_ID = 1491507818975461576
+_livefeed_ch = os.getenv("LIVEFEED_CHANNEL_ID")
+LIVEFEED_CHANNEL_ID = int(_livefeed_ch) if _livefeed_ch else None
 CORP_API_URL = "https://api.anubisrp.com/v2.5/corp/id/1"
 WEEKLY_SHIFT_REQ = 40
 
@@ -97,14 +98,20 @@ def has_allowed_role(interaction: discord.Interaction) -> bool:
 @tasks.loop(seconds=POLL_INTERVAL)
 async def poll_livefeed():
     """Fetch the livefeed and store new police events in the database."""
+    if not LIVEFEED_CHANNEL_ID:
+        return
+
     events = await fetch_livefeed(bot.http_session)
     if events:
         new_events = insert_events_batch(events)
         if new_events:
             logger.info("Stored %d new police events", len(new_events))
             channel = bot.get_channel(LIVEFEED_CHANNEL_ID)
-            if channel:
-                for event in new_events:
+            if not channel:
+                logger.warning("Livefeed channel %d not found — are the ID and bot permissions correct?", LIVEFEED_CHANNEL_ID)
+                return
+            for event in new_events:
+                try:
                     embed = discord.Embed(
                         title=f"{ACTION_ICONS.get(event['action'], '\U0001f46e')} {event['action'].title()}",
                         description=format_event_line(event),
@@ -113,6 +120,8 @@ async def poll_livefeed():
                     )
                     embed.set_footer(text=f"ENP Bot v{__version__}")
                     await channel.send(embed=embed)
+                except Exception:
+                    logger.exception("Failed to send livefeed embed for event %s", event["id"])
 
 
 @poll_livefeed.before_loop
@@ -222,6 +231,10 @@ async def on_ready():
     logger.info("Logged in as %s (ID: %s)", bot.user.name, bot.user.id)
     logger.info("Allowed roles: %s", ", ".join(ALLOWED_ROLES))
     logger.info("Poll interval: %ds", POLL_INTERVAL)
+    if LIVEFEED_CHANNEL_ID:
+        logger.info("Livefeed channel: %d", LIVEFEED_CHANNEL_ID)
+    else:
+        logger.warning("LIVEFEED_CHANNEL_ID not set — livefeed posting is disabled")
 
     bot.http_session = aiohttp.ClientSession()
     init_db()
@@ -239,7 +252,7 @@ async def on_ready():
     # Announce new deployment if commit SHA changed
     commit_sha = os.getenv("RAILWAY_GIT_COMMIT_SHA")
     commit_msg = os.getenv("RAILWAY_GIT_COMMIT_MESSAGE", "No commit message provided.")
-    if commit_sha:
+    if commit_sha and LIVEFEED_CHANNEL_ID:
         last_sha = get_meta("last_announced_commit")
         if commit_sha != last_sha:
             channel = bot.get_channel(LIVEFEED_CHANNEL_ID)
