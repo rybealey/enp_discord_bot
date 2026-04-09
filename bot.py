@@ -1,4 +1,4 @@
-__version__ = "2.2.0"
+__version__ = "2.3.0"
 
 import io
 import os
@@ -132,9 +132,16 @@ async def before_poll():
 # ---------------------------------------------------------------------------
 # Weekly shift snapshot task — runs every Sunday at 23:55 UTC
 # ---------------------------------------------------------------------------
-@tasks.loop(time=time(hour=23, minute=55, tzinfo=timezone.utc))
+@tasks.loop(time=[time(hour=23, minute=55, tzinfo=timezone.utc),
+                   time(hour=0, minute=5, tzinfo=timezone.utc)])
 async def weekly_shift_snapshot():
-    if datetime.now(timezone.utc).weekday() != 6:  # 6 = Sunday
+    now = datetime.now(timezone.utc)
+    # Run at 23:55 on Sunday or 00:05 on Monday
+    if now.weekday() == 6 and now.hour == 23:
+        pass  # Sunday 23:55
+    elif now.weekday() == 0 and now.hour == 0:
+        pass  # Monday 00:05
+    else:
         return
 
     headers = {"User-Agent": "ENPBot/1.0"}
@@ -165,6 +172,29 @@ async def weekly_shift_snapshot():
     if members:
         count = insert_shift_snapshot(members, week_ending)
         logger.info("Shift snapshot: logged %d members for week ending %s", count, week_ending)
+
+        # Auto-post the weekly shifts graph to the livefeed channel
+        if LIVEFEED_CHANNEL_ID:
+            shift_data = get_weekly_shifts_by_timezone(limit=15)
+            if shift_data:
+                channel = bot.get_channel(LIVEFEED_CHANNEL_ID)
+                if channel:
+                    try:
+                        buf = _render_shifts_graph(shift_data)
+                        file = discord.File(buf, filename="graph.png")
+                        embed = discord.Embed(
+                            title="\U0001f4ca Weekly Shifts Summary",
+                            color=discord.Color.blurple(),
+                            timestamp=datetime.now(timezone.utc),
+                        )
+                        embed.set_image(url="attachment://graph.png")
+                        embed.set_footer(text=f"ENP Bot v{__version__}")
+                        await channel.send(embed=embed, file=file)
+                        logger.info("Shift snapshot: posted weekly shifts graph to livefeed")
+                    except Exception:
+                        logger.exception("Shift snapshot: failed to post shifts graph")
+                else:
+                    logger.warning("Shift snapshot: livefeed channel %d not found", LIVEFEED_CHANNEL_ID)
     else:
         logger.warning("Shift snapshot: no members found in API response")
 
@@ -175,9 +205,9 @@ async def before_shift_snapshot():
 
 
 # ---------------------------------------------------------------------------
-# Shift tracking task — polls every 10 minutes, logs individual shifts
+# Shift tracking task — polls every 1 minute, logs individual shifts
 # ---------------------------------------------------------------------------
-@tasks.loop(minutes=10)
+@tasks.loop(minutes=1)
 async def poll_shifts():
     """Fetch shift data from the API and log new individual shifts."""
     # Reset cache at the start of each week (Monday 00:00 UTC)
@@ -610,6 +640,18 @@ async def cmd_shifts(interaction: discord.Interaction, date: str | None = None):
     await interaction.followup.send(embed=embed)
 
 
+@cmd_shifts.autocomplete("date")
+async def shifts_date_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    dates = get_available_snapshot_dates()
+    return [
+        app_commands.Choice(name=f"Week ending {d}", value=d)
+        for d in dates
+        if current.lower() in d
+    ][:25]
+
+
 # ---------------------------------------------------------------------------
 # Slash Commands — Graphs
 # ---------------------------------------------------------------------------
@@ -665,15 +707,8 @@ async def cmd_graph(interaction: discord.Interaction, action: app_commands.Choic
     await interaction.followup.send(embed=embed, file=file)
 
 
-async def _graph_shifts(interaction: discord.Interaction):
-    """Render a stacked horizontal bar graph of shifts broken down by timezone."""
-    data = get_weekly_shifts_by_timezone(limit=15)
-    if not data:
-        await interaction.response.send_message("No shift data recorded this week.", ephemeral=True)
-        return
-
-    await interaction.response.defer(ephemeral=True)
-
+def _render_shifts_graph(data: dict[str, dict[str, int]]) -> io.BytesIO:
+    """Render a shifts-by-timezone bar chart and return the PNG as a BytesIO buffer."""
     users = sorted(data.keys(), key=lambda u: sum(data[u].values()))
 
     fig, ax = plt.subplots(figsize=(10, max(3, len(users) * 0.5)))
@@ -715,7 +750,19 @@ async def _graph_shifts(interaction: discord.Interaction):
     fig.savefig(buf, format="png", dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close(fig)
     buf.seek(0)
+    return buf
 
+
+async def _graph_shifts(interaction: discord.Interaction):
+    """Render a stacked horizontal bar graph of shifts broken down by timezone."""
+    data = get_weekly_shifts_by_timezone(limit=15)
+    if not data:
+        await interaction.response.send_message("No shift data recorded this week.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    buf = _render_shifts_graph(data)
     file = discord.File(buf, filename="graph.png")
     embed = discord.Embed(
         title="\U0001f4ca Weekly Shifts by Timezone",
