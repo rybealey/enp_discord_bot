@@ -1,4 +1,4 @@
-__version__ = "2.3.3"
+__version__ = "2.3.4"
 
 import io
 import os
@@ -118,7 +118,7 @@ async def poll_livefeed():
                 try:
                     embed = discord.Embed(
                         title=f"{ACTION_ICONS.get(event['action'], '\U0001f46e')} {event['action'].title()}",
-                        description=format_event_line(event),
+                        description=format_event_line(event, include_icon=False),
                         color=ACTION_COLORS.get(event["action"], discord.Color.blurple()),
                         timestamp=datetime.now(timezone.utc),
                     )
@@ -375,16 +375,16 @@ ACTION_ICONS = {
 }
 
 
-def format_event_line(row) -> str:
+def format_event_line(row, include_icon: bool = True) -> str:
     """Format a single event as a compact line for embed descriptions."""
-    icon = ACTION_ICONS.get(row["action"], "\U0001f46e")
+    icon = f"{ACTION_ICONS.get(row['action'], '\U0001f46e')} " if include_icon else ""
     ts = f"<t:{row['timestamp']}:f>"
     if row["action"] == "pardoned":
-        return f"{icon} **{row['officer']}** pardoned **{row['perpetrator']}** of all crimes {ts}"
+        return f"{icon}**{row['officer']}** pardoned **{row['perpetrator']}** of all crimes {ts}"
     if row["action"] == "released":
-        return f"{icon} **{row['officer']}** released **{row['perpetrator']}** from prison {ts}"
+        return f"{icon}**{row['officer']}** released **{row['perpetrator']}** from prison {ts}"
     details = f" — {row['details']}" if row["details"] else ""
-    return f"{icon} **{row['officer']}** {row['action']} **{row['perpetrator']}**{details} {ts}"
+    return f"{icon}**{row['officer']}** {row['action']} **{row['perpetrator']}**{details} {ts}"
 
 
 def build_event_embed(title: str, events: list, color: discord.Color = None) -> discord.Embed:

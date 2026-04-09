@@ -24,7 +24,7 @@ PARDON_PATTERN = re.compile(
     r"^.+?\s+(.+?)\s+pardoned\s+(.+?)(?:\s+(?:of|for)\s+(.+))?$"
 )
 RELEASE_PATTERN = re.compile(
-    r"^.+?\s+(.+?)\s+released\s+(.+?)\s+from\s+prison$"
+    r"^.+?\s+(.+?)\s+(?:force\s+)?released\s+(.+?)\s+from\s+prison$"
 )
 
 
