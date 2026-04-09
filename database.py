@@ -386,8 +386,12 @@ def get_weekly_shifts_by_timezone(limit: int = 15) -> dict[str, dict[str, int]]:
     ).fetchall()
     conn.close()
 
-    # Build timezone lookup
-    tz_defs = [(r["label"], r["start_hour"], r["end_hour"]) for r in tz_rows]
+    # Apply DST offset: when enabled, shift windows back by 1 hour in UTC
+    dst_offset = 1 if get_meta("dst_enabled") == "1" else 0
+    tz_defs = [
+        (r["label"], (r["start_hour"] - dst_offset) % 24, (r["end_hour"] - dst_offset) % 24)
+        for r in tz_rows
+    ]
 
     def classify_hour(hour: int) -> str:
         for label, start, end in tz_defs:

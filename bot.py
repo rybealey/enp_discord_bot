@@ -1,4 +1,4 @@
-__version__ = "2.3.0"
+__version__ = "2.3.1"
 
 import io
 import os
@@ -254,6 +254,46 @@ async def before_poll_shifts():
 
 
 # ---------------------------------------------------------------------------
+# DST auto-detection task — runs daily at 03:00 UTC
+# ---------------------------------------------------------------------------
+def _is_uk_dst(dt: datetime) -> bool:
+    """Return True if the given UTC datetime falls within UK BST (last Sunday
+    of March 01:00 UTC to last Sunday of October 01:00 UTC)."""
+    year = dt.year
+
+    # Last Sunday of March
+    mar_last = 31
+    while datetime(year, 3, mar_last).weekday() != 6:
+        mar_last -= 1
+    dst_start = datetime(year, 3, mar_last, 1, tzinfo=timezone.utc)
+
+    # Last Sunday of October
+    oct_last = 31
+    while datetime(year, 10, oct_last).weekday() != 6:
+        oct_last -= 1
+    dst_end = datetime(year, 10, oct_last, 1, tzinfo=timezone.utc)
+
+    return dst_start <= dt < dst_end
+
+
+@tasks.loop(time=time(hour=3, minute=0, tzinfo=timezone.utc))
+async def dst_check():
+    """Automatically enable/disable DST based on UK BST rules."""
+    now = datetime.now(timezone.utc)
+    should_be = "1" if _is_uk_dst(now) else "0"
+    current = get_meta("dst_enabled") or "0"
+    if should_be != current:
+        set_meta("dst_enabled", should_be)
+        state = "enabled" if should_be == "1" else "disabled"
+        logger.info("DST auto-check: %s (was %s)", state, "enabled" if current == "1" else "disabled")
+
+
+@dst_check.before_loop
+async def before_dst_check():
+    await bot.wait_until_ready()
+
+
+# ---------------------------------------------------------------------------
 # Events
 # ---------------------------------------------------------------------------
 @bot.event
@@ -275,6 +315,8 @@ async def on_ready():
         weekly_shift_snapshot.start()
     if not poll_shifts.is_running():
         poll_shifts.start()
+    if not dst_check.is_running():
+        dst_check.start()
 
     await tree.sync()
     logger.info("Slash commands synced")
@@ -814,6 +856,7 @@ async def cmd_help(interaction: discord.Interaction):
         name="\u2699\ufe0f Utility",
         value=(
             "**/about** \u2014 Bot info and configuration\n"
+            "**/configuration** `<setting>` `[value]` \u2014 View or update settings (e.g. DST)\n"
             "**/help** \u2014 This message"
         ),
         inline=False,
@@ -835,9 +878,43 @@ async def cmd_about(interaction: discord.Interaction):
     embed.add_field(name="Total Events", value=str(total), inline=True)
     embed.add_field(name="Poll Interval", value=f"{POLL_INTERVAL}s", inline=True)
     embed.add_field(name="Tracking", value="Arrests, Charges, Pardons, Releases", inline=True)
+    dst = get_meta("dst_enabled") or "0"
+    embed.add_field(name="DST", value="Enabled (+1 GMT)" if dst == "1" else "Disabled (GMT)", inline=True)
     embed.add_field(name="Version", value=f"v{__version__}", inline=True)
     embed.set_footer(text=f"ENP Bot v{__version__}")
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@tree.command(name="configuration", description="View or update bot configuration")
+@app_commands.describe(
+    setting="The setting to configure",
+    value="New value for the setting (omit to view current value)",
+)
+@app_commands.choices(setting=[
+    app_commands.Choice(name="Daylight Savings Time", value="dst"),
+])
+@app_commands.choices(value=[
+    app_commands.Choice(name="Enabled", value="1"),
+    app_commands.Choice(name="Disabled", value="0"),
+])
+async def cmd_configuration(
+    interaction: discord.Interaction,
+    setting: app_commands.Choice[str],
+    value: app_commands.Choice[str] | None = None,
+):
+    if setting.value == "dst":
+        if value is not None:
+            set_meta("dst_enabled", value.value)
+            state = "Enabled (+1 GMT)" if value.value == "1" else "Disabled (GMT)"
+            await interaction.response.send_message(
+                f"\u2699\ufe0f **Daylight Savings Time** set to **{state}**.", ephemeral=True
+            )
+        else:
+            current = get_meta("dst_enabled") or "0"
+            state = "Enabled (+1 GMT)" if current == "1" else "Disabled (GMT)"
+            await interaction.response.send_message(
+                f"\u2699\ufe0f **Daylight Savings Time** is currently **{state}**.", ephemeral=True
+            )
 
 
 # ---------------------------------------------------------------------------
