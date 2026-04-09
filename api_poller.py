@@ -23,6 +23,9 @@ CHARGE_PATTERN = re.compile(
 PARDON_PATTERN = re.compile(
     r"^.+?\s+(.+?)\s+pardoned\s+(.+?)(?:\s+(?:of|for)\s+(.+))?$"
 )
+RELEASE_PATTERN = re.compile(
+    r"^.+?\s+(.+?)\s+released\s+(.+?)\s+from\s+prison$"
+)
 
 
 def parse_police_event(raw: dict) -> dict | None:
@@ -65,6 +68,14 @@ def parse_police_event(raw: dict) -> dict | None:
         event["action"] = "pardoned"
         event["perpetrator"] = match.group(2).strip()
         event["details"] = match.group(3).strip() if match.group(3) else None
+        return event
+
+    match = RELEASE_PATTERN.match(text)
+    if match:
+        event["officer"] = match.group(1).strip()
+        event["action"] = "released"
+        event["perpetrator"] = match.group(2).strip()
+        event["details"] = "from prison"
         return event
 
     # Unknown police event — log it so we can add a pattern later

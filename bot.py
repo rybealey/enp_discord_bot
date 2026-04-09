@@ -1,4 +1,4 @@
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 
 import io
 import os
@@ -288,12 +288,14 @@ ACTION_COLORS = {
     "arrested": discord.Color.red(),
     "charged": discord.Color.orange(),
     "pardoned": discord.Color.green(),
+    "released": discord.Color.teal(),
 }
 
 ACTION_ICONS = {
     "arrested": "\U0001f6a8",   # 🚨
     "charged": "\U0001f4cb",    # 📋
     "pardoned": "\u2705",       # ✅
+    "released": "\U0001f513",   # 🔓
 }
 
 
@@ -303,6 +305,8 @@ def format_event_line(row) -> str:
     ts = f"<t:{row['timestamp']}:f>"
     if row["action"] == "pardoned":
         return f"{icon} **{row['officer']}** pardoned **{row['perpetrator']}** of all crimes {ts}"
+    if row["action"] == "released":
+        return f"{icon} **{row['officer']}** released **{row['perpetrator']}** from prison {ts}"
     details = f" — {row['details']}" if row["details"] else ""
     return f"{icon} **{row['officer']}** {row['action']} **{row['perpetrator']}**{details} {ts}"
 
@@ -331,12 +335,14 @@ GRAPH_COLORS = {
     "arrested": "#e74c3c",
     "charged": "#e67e22",
     "pardoned": "#2ecc71",
+    "released": "#1abc9c",
 }
 
 GRAPH_ACTION_CHOICES = [
     app_commands.Choice(name="Arrests", value="arrested"),
     app_commands.Choice(name="Charges", value="charged"),
     app_commands.Choice(name="Pardons", value="pardoned"),
+    app_commands.Choice(name="Releases", value="released"),
     app_commands.Choice(name="Shifts", value="shifts"),
 ]
 
@@ -424,6 +430,19 @@ async def cmd_pardons(interaction: discord.Interaction, count: int = 10):
         return
 
     embed = build_event_embed("Recent Pardons", events, color=discord.Color.green())
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@tree.command(name="releases", description="Show recent prison releases")
+@app_commands.describe(count="Number of releases to show (default: 10, max: 25)")
+async def cmd_releases(interaction: discord.Interaction, count: int = 10):
+    count = min(count, 25)
+    events = get_events_by_action("released", limit=count)
+    if not events:
+        await interaction.response.send_message("No releases recorded yet.", ephemeral=True)
+        return
+
+    embed = build_event_embed("Recent Releases", events, color=discord.Color.teal())
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -727,6 +746,7 @@ async def cmd_help(interaction: discord.Interaction):
             "**/arrests** `[count]` \u2014 Recent arrests\n"
             "**/charges** `[count]` \u2014 Recent charges\n"
             "**/pardons** `[count]` \u2014 Recent pardons\n"
+            "**/releases** `[count]` \u2014 Recent prison releases\n"
             "**/officer** `<name>` \u2014 Actions by a specific officer\n"
             "**/suspect** `<name>` \u2014 Actions against a specific player"
         ),
@@ -738,7 +758,7 @@ async def cmd_help(interaction: discord.Interaction):
         value=(
             "**/shifts** `[date]` \u2014 Weekly shift overview (live or historical)\n"
             "**/leaderboard** `[count]` \u2014 Top officers by arrests *(visible to all)*\n"
-            "**/graph** `<action>` \u2014 Bar chart of weekly activity (Arrests, Charges, Pardons, Shifts)"
+            "**/graph** `<action>` \u2014 Bar chart of weekly activity (Arrests, Charges, Pardons, Releases, Shifts)"
         ),
         inline=False,
     )
@@ -746,7 +766,7 @@ async def cmd_help(interaction: discord.Interaction):
     embed.add_field(
         name="\u2699\ufe0f Utility",
         value=(
-            "**/stats** \u2014 Bot stats and configuration\n"
+            "**/about** \u2014 Bot info and configuration\n"
             "**/help** \u2014 This message"
         ),
         inline=False,
@@ -756,17 +776,18 @@ async def cmd_help(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@tree.command(name="stats", description="Show bot stats and configuration")
-async def cmd_stats(interaction: discord.Interaction):
+@tree.command(name="about", description="Show bot info and configuration")
+async def cmd_about(interaction: discord.Interaction):
     total = get_event_count()
     embed = discord.Embed(
-        title="\U0001f46e ENP Bot Stats",
+        title="\U0001f46e ENP Bot",
+        description="Developed and updated by Peggy.",
         color=discord.Color.blurple(),
         timestamp=datetime.now(timezone.utc),
     )
     embed.add_field(name="Total Events", value=str(total), inline=True)
     embed.add_field(name="Poll Interval", value=f"{POLL_INTERVAL}s", inline=True)
-    embed.add_field(name="Tracking", value="Arrests, Charges, Pardons", inline=True)
+    embed.add_field(name="Tracking", value="Arrests, Charges, Pardons, Releases", inline=True)
     embed.add_field(name="Version", value=f"v{__version__}", inline=True)
     embed.set_footer(text=f"ENP Bot v{__version__}")
     await interaction.response.send_message(embed=embed, ephemeral=True)
