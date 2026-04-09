@@ -50,6 +50,8 @@ ALLOWED_ROLES = [r.strip() for r in os.getenv("ALLOWED_ROLES", "Admin").split(",
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "15"))
 _livefeed_ch = os.getenv("LIVEFEED_CHANNEL_ID")
 LIVEFEED_CHANNEL_ID = int(_livefeed_ch) if _livefeed_ch else None
+_shifts_ch = os.getenv("SHIFTS_CHANNEL_ID", _livefeed_ch or "")
+SHIFTS_CHANNEL_ID = int(_shifts_ch) if _shifts_ch else None
 CORP_API_URL = "https://api.anubisrp.com/v2.5/corp/id/1"
 WEEKLY_SHIFT_REQ = 40
 
@@ -175,11 +177,11 @@ async def weekly_shift_snapshot():
         count = insert_shift_snapshot(members, week_ending)
         logger.info("Shift snapshot: logged %d members for week ending %s", count, week_ending)
 
-        # Auto-post the weekly shifts graph to the livefeed channel
-        if LIVEFEED_CHANNEL_ID:
+        # Auto-post the weekly shifts graph to the shifts channel
+        if SHIFTS_CHANNEL_ID:
             shift_data = get_weekly_shifts_by_timezone(limit=15)
             if shift_data:
-                channel = bot.get_channel(LIVEFEED_CHANNEL_ID)
+                channel = bot.get_channel(SHIFTS_CHANNEL_ID)
                 if channel:
                     try:
                         buf = _render_shifts_graph(shift_data)
@@ -192,11 +194,11 @@ async def weekly_shift_snapshot():
                         embed.set_image(url="attachment://graph.png")
                         embed.set_footer(text=f"ENP Bot v{__version__}")
                         await channel.send(embed=embed, file=file)
-                        logger.info("Shift snapshot: posted weekly shifts graph to livefeed")
+                        logger.info("Shift snapshot: posted weekly shifts graph")
                     except Exception:
                         logger.exception("Shift snapshot: failed to post shifts graph")
                 else:
-                    logger.warning("Shift snapshot: livefeed channel %d not found", LIVEFEED_CHANNEL_ID)
+                    logger.warning("Shift snapshot: shifts channel %d not found", SHIFTS_CHANNEL_ID)
     else:
         logger.warning("Shift snapshot: no members found in API response")
 
