@@ -906,6 +906,7 @@ async def cmd_about(interaction: discord.Interaction):
     dst = get_meta("dst_enabled") or "0"
     embed.add_field(name="DST", value="Enabled (+1 GMT)" if dst == "1" else "Disabled (GMT)", inline=True)
     embed.add_field(name="Version", value=f"v{__version__}", inline=True)
+    embed.add_field(name="GitHub", value="[enp_discord_bot](https://github.com/rybealey/enp_discord_bot)", inline=True)
     embed.set_footer(text=f"ENP Bot v{__version__}")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
