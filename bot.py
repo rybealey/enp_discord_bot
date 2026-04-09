@@ -1,4 +1,4 @@
-__version__ = "2.3.2"
+__version__ = "2.3.3"
 
 import io
 import os
@@ -33,6 +33,8 @@ from database import (
     update_shift_cache_and_log,
     reset_shift_cache,
     get_weekly_shifts_by_timezone,
+    get_weekly_shift_sum,
+    get_total_shift_sum,
     get_meta,
     set_meta,
 )
@@ -694,6 +696,27 @@ async def shifts_date_autocomplete(
     ][:25]
 
 
+@tree.command(name="sum", description="Total sum of logged shift activity")
+@app_commands.describe(scope="Count weekly shifts or all-time total shifts")
+@app_commands.choices(scope=[
+    app_commands.Choice(name="Weekly", value="weekly"),
+    app_commands.Choice(name="Total", value="total"),
+])
+async def cmd_sum(interaction: discord.Interaction, scope: app_commands.Choice[str]):
+    if scope.value == "weekly":
+        count = get_weekly_shift_sum()
+        await interaction.response.send_message(
+            f"\U0001f4cb **Weekly Shift Total:** {count} shift{'s' if count != 1 else ''} logged this week.",
+            ephemeral=True,
+        )
+    else:
+        count = get_total_shift_sum()
+        await interaction.response.send_message(
+            f"\U0001f4cb **All-Time Shift Total:** {count} shift{'s' if count != 1 else ''} logged.",
+            ephemeral=True,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Slash Commands — Graphs
 # ---------------------------------------------------------------------------
@@ -846,6 +869,7 @@ async def cmd_help(interaction: discord.Interaction):
         name="\U0001f4cb Shifts & Leaderboard",
         value=(
             "**/shifts** `[date]` \u2014 Weekly shift overview (live or historical)\n"
+            "**/sum** `<scope>` \u2014 Total sum of logged shifts (Weekly or Total)\n"
             "**/leaderboard** `[count]` \u2014 Top officers by arrests *(visible to all)*\n"
             "**/graph** `<action>` \u2014 Bar chart of weekly activity (Arrests, Charges, Pardons, Releases, Shifts)"
         ),

@@ -422,6 +422,25 @@ def get_weekly_shifts_by_timezone(limit: int = 15) -> dict[str, dict[str, int]]:
     return {u: result[u] for u in sorted_users}
 
 
+def get_weekly_shift_sum() -> int:
+    """Return the total number of shifts logged this week."""
+    monday_ts = _monday_midnight_ts()
+    conn = get_connection()
+    count = conn.execute(
+        "SELECT COUNT(*) FROM shift_log WHERE timestamp >= ?", (monday_ts,)
+    ).fetchone()[0]
+    conn.close()
+    return count
+
+
+def get_total_shift_sum() -> int:
+    """Return the total number of shifts ever logged."""
+    conn = get_connection()
+    count = conn.execute("SELECT COUNT(*) FROM shift_log").fetchone()[0]
+    conn.close()
+    return count
+
+
 def get_meta(key: str) -> str | None:
     conn = get_connection()
     row = conn.execute("SELECT value FROM bot_meta WHERE key = ?", (key,)).fetchone()
