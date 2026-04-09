@@ -1,4 +1,4 @@
-__version__ = "2.3.1"
+__version__ = "2.3.2"
 
 import io
 import os
@@ -856,7 +856,6 @@ async def cmd_help(interaction: discord.Interaction):
         name="\u2699\ufe0f Utility",
         value=(
             "**/about** \u2014 Bot info and configuration\n"
-            "**/configuration** `<setting>` `[value]` \u2014 View or update settings (e.g. DST)\n"
             "**/help** \u2014 This message"
         ),
         inline=False,
@@ -883,38 +882,6 @@ async def cmd_about(interaction: discord.Interaction):
     embed.add_field(name="Version", value=f"v{__version__}", inline=True)
     embed.set_footer(text=f"ENP Bot v{__version__}")
     await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-@tree.command(name="configuration", description="View or update bot configuration")
-@app_commands.describe(
-    setting="The setting to configure",
-    value="New value for the setting (omit to view current value)",
-)
-@app_commands.choices(setting=[
-    app_commands.Choice(name="Daylight Savings Time", value="dst"),
-])
-@app_commands.choices(value=[
-    app_commands.Choice(name="Enabled", value="1"),
-    app_commands.Choice(name="Disabled", value="0"),
-])
-async def cmd_configuration(
-    interaction: discord.Interaction,
-    setting: app_commands.Choice[str],
-    value: app_commands.Choice[str] | None = None,
-):
-    if setting.value == "dst":
-        if value is not None:
-            set_meta("dst_enabled", value.value)
-            state = "Enabled (+1 GMT)" if value.value == "1" else "Disabled (GMT)"
-            await interaction.response.send_message(
-                f"\u2699\ufe0f **Daylight Savings Time** set to **{state}**.", ephemeral=True
-            )
-        else:
-            current = get_meta("dst_enabled") or "0"
-            state = "Enabled (+1 GMT)" if current == "1" else "Disabled (GMT)"
-            await interaction.response.send_message(
-                f"\u2699\ufe0f **Daylight Savings Time** is currently **{state}**.", ephemeral=True
-            )
 
 
 # ---------------------------------------------------------------------------

@@ -70,9 +70,9 @@ def init_db():
         );
 
         INSERT OR IGNORE INTO timezones (label, start_hour, end_hour) VALUES
-            ('OC',  6, 14),
-            ('EU', 14, 22),
-            ('NA', 22,  6);
+            ('OC',  8, 16),
+            ('EU', 16,  0),
+            ('NA',  0,  8);
 
         CREATE TABLE IF NOT EXISTS bot_meta (
             key   TEXT PRIMARY KEY,
@@ -86,6 +86,14 @@ def init_db():
         conn.execute("DELETE FROM shift_log")
         conn.execute("DELETE FROM shift_cache")
         conn.execute("INSERT INTO bot_meta (key, value) VALUES ('shift_log_v2_reset', '1')")
+        conn.commit()
+
+    # One-time migration: update timezone windows to OC 8-16, EU 16-0, NA 0-8
+    if not conn.execute("SELECT 1 FROM bot_meta WHERE key = 'tz_v2_updated'").fetchone():
+        conn.execute("UPDATE timezones SET start_hour = 8, end_hour = 16 WHERE label = 'OC'")
+        conn.execute("UPDATE timezones SET start_hour = 16, end_hour = 0 WHERE label = 'EU'")
+        conn.execute("UPDATE timezones SET start_hour = 0, end_hour = 8 WHERE label = 'NA'")
+        conn.execute("INSERT INTO bot_meta (key, value) VALUES ('tz_v2_updated', '1')")
         conn.commit()
 
     conn.close()
