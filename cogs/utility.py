@@ -40,8 +40,8 @@ class UtilityCog(commands.Cog):
             value=(
                 "**/shifts** `[date]` \u2014 Weekly shift overview (live or historical)\n"
                 "**/sum** `<scope>` \u2014 Total sum of logged shifts (Weekly or Total)\n"
-                "**/leaderboard** `[count]` \u2014 Top officers by arrests *(visible to all)*\n"
-                "**/graph** `<action>` \u2014 Bar chart of weekly activity (Arrests, Charges, Pardons, Releases, Shifts)"
+                "**/leaderboard** \u2014 Every current ENP officer ranked by weekly arrests *(visible to all)*\n"
+                "**/graph** `<action>` \u2014 Bar chart of weekly activity *(visible to all)*"
             ),
             inline=False,
         )
@@ -73,7 +73,11 @@ class UtilityCog(commands.Cog):
         dst = get_meta("dst_enabled") or "0"
         embed.add_field(name="DST", value="Enabled (+1 GMT)" if dst == "1" else "Disabled (GMT)", inline=True)
         embed.add_field(name="Version", value=f"v{__version__}", inline=True)
-        embed.add_field(name="GitHub", value="[enp_discord_bot](https://github.com/rybealey/enp_discord_bot)", inline=True)
+        embed.add_field(
+            name="Developer",
+            value="[Message Developer](https://discord.com/users/608531997849026609)",
+            inline=True,
+        )
         embed.set_footer(text=f"ENP Bot v{__version__}")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 

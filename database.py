@@ -78,6 +78,28 @@ def init_db():
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS corp_roster (
+            username    TEXT PRIMARY KEY,
+            rank        TEXT NOT NULL,
+            first_seen  INTEGER NOT NULL,
+            last_seen   INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS roster_events (
+            id            INTEGER PRIMARY KEY,
+            event_type    TEXT    NOT NULL,
+            member        TEXT    NOT NULL,
+            actor         TEXT,
+            details       TEXT,
+            raw_text      TEXT    NOT NULL,
+            timestamp     INTEGER NOT NULL,
+            created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_roster_events_ts     ON roster_events(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_roster_events_member ON roster_events(member);
+        CREATE INDEX IF NOT EXISTS idx_roster_events_type   ON roster_events(event_type);
     """)
     conn.commit()
 
@@ -439,6 +461,102 @@ def get_total_shift_sum() -> int:
     count = conn.execute("SELECT COUNT(*) FROM shift_log").fetchone()[0]
     conn.close()
     return count
+
+
+def sync_corp_roster(members: list[dict]) -> None:
+    """Replace the stored corp_roster with the current member list.
+
+    Each member dict must have: username, rank.
+
+    This is purely a state mirror — it does NOT generate hire/departure events.
+    Hire/fire/quit/sent-home events are detected from the livefeed instead, in
+    api_poller.parse_managerial_event.
+
+    The roster is used to check whether a given username is currently in ENP
+    (e.g. to filter the corp-less "sent home" livefeed events).
+    """
+    if not members:
+        return
+
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    incoming_usernames = {m["username"] for m in members}
+
+    conn = get_connection()
+    stored = {row["username"] for row in conn.execute("SELECT username FROM corp_roster").fetchall()}
+
+    # Upsert current members
+    conn.executemany(
+        """INSERT INTO corp_roster (username, rank, first_seen, last_seen)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(username) DO UPDATE SET
+               rank = excluded.rank,
+               last_seen = excluded.last_seen""",
+        [(m["username"], m["rank"], now_ts, now_ts) for m in members],
+    )
+
+    # Drop anyone no longer in the corp
+    stale = stored - incoming_usernames
+    if stale:
+        placeholders = ",".join("?" for _ in stale)
+        conn.execute(f"DELETE FROM corp_roster WHERE username IN ({placeholders})", list(stale))
+
+    conn.commit()
+    conn.close()
+
+
+def is_in_enp_roster(username: str) -> bool:
+    """Return True if the given username is currently in the cached ENP roster."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT 1 FROM corp_roster WHERE username = ? LIMIT 1", (username,)
+    ).fetchone()
+    conn.close()
+    return row is not None
+
+
+def insert_roster_events_batch(events: list[dict]) -> list[dict]:
+    """Insert a batch of managerial roster events, skipping duplicates by id.
+
+    Each event dict must have: id, event_type, member, actor, details,
+    raw_text, timestamp.
+
+    Returns the list of newly inserted events (skipping rows already present).
+    """
+    if not events:
+        return []
+
+    conn = get_connection()
+    incoming_ids = [e["id"] for e in events]
+    placeholders = ",".join("?" for _ in incoming_ids)
+    existing = {
+        row[0]
+        for row in conn.execute(
+            f"SELECT id FROM roster_events WHERE id IN ({placeholders})",
+            incoming_ids,
+        ).fetchall()
+    }
+    new_events = [e for e in events if e["id"] not in existing]
+    if new_events:
+        conn.executemany(
+            """INSERT OR IGNORE INTO roster_events
+               (id, event_type, member, actor, details, raw_text, timestamp)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            [
+                (
+                    e["id"],
+                    e["event_type"],
+                    e["member"],
+                    e.get("actor"),
+                    e.get("details"),
+                    e["raw_text"],
+                    e["timestamp"],
+                )
+                for e in new_events
+            ],
+        )
+        conn.commit()
+    conn.close()
+    return new_events
 
 
 def get_meta(key: str) -> str | None:

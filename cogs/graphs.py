@@ -33,7 +33,7 @@ class GraphsCog(commands.Cog):
             )
             return
 
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
 
         officers = [row["officer"] for row in reversed(rows)]
         counts = [row["action_count"] for row in reversed(rows)]
@@ -76,7 +76,7 @@ class GraphsCog(commands.Cog):
             await interaction.response.send_message("No shift data recorded this week.", ephemeral=True)
             return
 
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
 
         buf = render_shifts_graph(data)
         file = discord.File(buf, filename="graph.png")

@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.4.0-orange?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.5.0-orange?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square&logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/discord.py-2.3+-5865F2?style=flat-square&logo=discord&logoColor=white" alt="discord.py">
   <img src="https://img.shields.io/badge/database-SQLite-003B57?style=flat-square&logo=sqlite&logoColor=white" alt="SQLite">
@@ -22,18 +22,19 @@ A Discord bot that polls the AnubisRP livefeed API, filters for police activity 
 
 - **Live Police Feed** — Polls the AnubisRP API every 15 seconds for arrests, charges, pardons, and releases
 - **Officer & Suspect Lookup** — Query activity by officer or player name (current week only)
-- **Weekly Leaderboard** — Ranked arrest counts reset each Monday (UTC), publicly visible
-- **Graphing** — Dark-themed bar charts for weekly action breakdowns, including timezone-segmented shift graphs
+- **Weekly Leaderboard** — Every current ENP officer ranked by arrest count, publicly visible, resets each Monday (UTC)
+- **Managerial Tracking** — Parses the livefeed for hires, send-homes, fires, and voluntary quits affecting ENP and posts an announcement for each
+- **Graphing** — Dark-themed public bar charts for weekly action breakdowns, including timezone-segmented shift graphs
 - **Shift Tracking** — Live and historical shift data per officer, grouped by rank
-- **Individual Shift Logging** — Polls every 10 minutes and logs each new shift with a timestamp for timezone classification
+- **Individual Shift Logging** — Polls every minute and logs each new shift with a timestamp for timezone classification
 - **Timezone Classification** — Shifts are categorized into OC (08:00–16:00 GMT), EU (16:00–00:00 GMT), and NA (00:00–08:00 GMT)
 - **Weekly Shift Snapshots** — Automatically logs shift data every Sunday at 23:55 UTC
-- **Ephemeral Responses** — All command responses are private to the invoking user, except `/leaderboard`
+- **Ephemeral Responses** — Most command responses are private to the invoking user; `/leaderboard` and `/graph` are public
 - **Deployment Notifications** — Announces new versions to a designated channel on each Railway deploy
 
 ## Commands
 
-All responses are ephemeral (only visible to you) except `/leaderboard`, which is public. Data is scoped to the current week (Monday 00:00 GMT onward). Use `/help` in Discord for a quick reference.
+Most responses are ephemeral (only visible to you); `/leaderboard` and `/graph` are public. Data is scoped to the current week (Monday 00:00 GMT onward). Use `/help` in Discord for a quick reference.
 
 ### Police Activity
 
@@ -53,8 +54,8 @@ All responses are ephemeral (only visible to you) except `/leaderboard`, which i
 |---------|-------------|------------|
 | `/shifts [date]` | Live shift overview, or historical data by date (`YYYY-MM-DD`) | Ephemeral |
 | `/sum <scope>` | Total sum of logged shifts (Weekly or Total) | Ephemeral |
-| `/leaderboard [count]` | Top officers by weekly arrest count | **Public** |
-| `/graph <action>` | Bar graph by action type or shifts by timezone | Ephemeral |
+| `/leaderboard` | Every current ENP officer ranked by weekly arrests | **Public** |
+| `/graph <action>` | Bar graph by action type or shifts by timezone | **Public** |
 
 ### Utility
 
@@ -79,9 +80,10 @@ Accepts a dropdown choice of **Arrests**, **Charges**, **Pardons**, **Releases**
 
 | Task | Schedule | Description |
 |------|----------|-------------|
-| `poll_livefeed` | Every 15s (configurable) | Fetches the livefeed API and stores new police events |
-| `poll_shifts` | Every 10 minutes | Polls the corp API, detects new shifts, and logs each one with a UTC timestamp |
-| `weekly_shift_snapshot` | Sundays at 23:55 UTC | Snapshots each officer's weekly and total shifts to the database |
+| `poll_livefeed` | Every 15s (configurable) | Fetches the livefeed API and stores new police events plus ENP managerial events (hires, send-homes, fires, quits) |
+| `poll_shifts` | Every 1 minute | Polls the corp API, logs new shifts, and mirrors the current ENP roster to the local cache |
+| `weekly_shift_snapshot` | Sundays at 23:55 UTC | Snapshots each officer's weekly and total shifts to the database, posts the weekly graph |
+| `dst_check` | Daily at 03:00 UTC | Auto-toggles UK BST detection for timezone classification |
 
 ## Deployment Notifications
 
@@ -220,6 +222,32 @@ Railway will automatically build and deploy on push. The bot runs as a worker pr
 | `start_hour` | `INTEGER` | Start hour in GMT (inclusive) |
 | `end_hour` | `INTEGER` | End hour in GMT (exclusive) |
 
+### `corp_roster`
+
+Cached snapshot of who is currently in ENP, refreshed every minute by `poll_shifts`. Used to filter livefeed `sent_home` events (which do not include a corp name) by checking whether the manager is in the ENP roster.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `username` | `TEXT` | Officer username (primary key) |
+| `rank` | `TEXT` | Current base rank |
+| `first_seen` | `INTEGER` | Unix timestamp the officer first appeared in the corp |
+| `last_seen` | `INTEGER` | Unix timestamp of the most recent confirmation |
+
+### `roster_events`
+
+Append-only log of every ENP managerial event parsed out of the livefeed.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `INTEGER` | Primary key from the livefeed API (dedupes across polls) |
+| `event_type` | `TEXT` | `hired`, `sent_home`, `fired`, or `quit` |
+| `member` | `TEXT` | The affected officer |
+| `actor` | `TEXT` | The manager who performed the action (null for `quit`) |
+| `details` | `TEXT` | Extra info — e.g. send-home duration in minutes |
+| `raw_text` | `TEXT` | Full raw text from the livefeed |
+| `timestamp` | `INTEGER` | Unix timestamp from the livefeed event |
+| `created_at` | `TEXT` | Row insertion time |
+
 ### `bot_meta`
 
 | Column | Type | Description |
@@ -241,9 +269,18 @@ bump2version major   # 1.1.1 -> 2.0.0
 
 ```
 enp_bot/
-├── bot.py             # Discord bot, commands, background tasks, and deploy announcements
-├── api_poller.py      # API fetching and police event parsing/filtering
+├── bot.py             # Slim entrypoint: bot setup, on_ready, error handler, main()
+├── config.py          # Constants, env vars, version, logging
+├── helpers.py         # Shared formatting helpers and graph rendering
+├── api_poller.py      # Livefeed API fetching and police event parsing/filtering
 ├── database.py        # SQLite schema, inserts, and queries
+├── cogs/
+│   ├── activity.py    # /recent, /officer, /suspect, /arrests, /charges, /pardons, /releases
+│   ├── shifts.py      # /leaderboard, /shifts, /sum + poll_shifts & weekly_shift_snapshot tasks
+│   ├── graphs.py      # /graph (action and shift graphs)
+│   ├── utility.py     # /help, /about
+│   ├── livefeed.py    # poll_livefeed background task
+│   └── dst.py         # dst_check background task
 ├── assets/
 │   └── enp_bot.gif    # ENP Bot logo
 ├── Procfile           # Railway process definition
@@ -254,3 +291,13 @@ enp_bot/
 ├── .gitignore
 └── README.md
 ```
+
+## Still on the Agenda
+
+The following features are planned but blocked on additional support from the AnubisRP developers — they cannot be implemented reliably until the API exposes the necessary data:
+
+- [ ] **Tracking tickets issued** — No event for ticket issuance is currently exposed by the AnubisRP livefeed or corp APIs.
+- [ ] **Tracking cops' start-work and stop-work times more efficiently** — Today the bot infers shifts by polling `weekly_shifts` deltas every minute, which gives shift counts but not precise on-duty/off-duty timestamps. A direct on-duty event from the API would replace this polling-and-diffing workaround.
+- [ ] **Tracking heist initiations and completions** — Heist start/end events are not present in any API surface the bot has access to.
+
+If you are an AnubisRP developer and would like to discuss exposing any of the above, please reach out via the ENP Discord.

@@ -20,6 +20,7 @@ from database import (
     get_total_shift_sum,
     get_weekly_shifts_by_timezone,
     update_shift_cache_and_log,
+    sync_corp_roster,
     reset_shift_cache,
     get_meta,
     set_meta,
@@ -80,6 +81,11 @@ class ShiftsCog(commands.Cog):
             new_count = update_shift_cache_and_log(members)
             if new_count > 0:
                 logger.info("Shift poll: logged %d new shift(s)", new_count)
+
+            # Mirror the corp API roster into corp_roster. This is a state
+            # cache only — hire/fire/quit/sent-home events are detected from
+            # the livefeed in cogs.livefeed, not from this diff.
+            sync_corp_roster(members)
 
     @poll_shifts_task.before_loop
     async def before_poll_shifts(self):
@@ -157,12 +163,11 @@ class ShiftsCog(commands.Cog):
     # Slash commands
     # ------------------------------------------------------------------
 
-    @app_commands.command(name="leaderboard", description="Top officers by arrest count for the current week")
-    @app_commands.describe(count="Number of officers to show (default: 10, max: 25)")
-    async def cmd_leaderboard(self, interaction: discord.Interaction, count: int = 10):
-        count = min(count, 25)
+    @app_commands.command(name="leaderboard", description="All current ENP officers ranked by weekly arrests")
+    async def cmd_leaderboard(self, interaction: discord.Interaction):
         await interaction.response.defer()
 
+        # Pull the full ENP roster from the corp API so non-arresting cops still appear
         all_members: set[str] = set()
         headers = {"User-Agent": "ENPBot/1.0"}
         try:
@@ -182,7 +187,7 @@ class ShiftsCog(commands.Cog):
             if member not in arrest_counts:
                 arrest_counts[member] = 0
 
-        sorted_officers = sorted(arrest_counts.items(), key=lambda x: (-x[1], x[0]))[:count]
+        sorted_officers = sorted(arrest_counts.items(), key=lambda x: (-x[1], x[0]))
 
         if not sorted_officers:
             await interaction.followup.send("No officers found.", ephemeral=True)
@@ -193,12 +198,30 @@ class ShiftsCog(commands.Cog):
             medal = {1: "\U0001f947", 2: "\U0001f948", 3: "\U0001f949"}.get(rank, f"`{rank}.`")
             lines.append(f"{medal} **{officer}** — {arrests} arrest{'s' if arrests != 1 else ''}")
 
+        # Discord embed descriptions cap at 4096 chars; chunk into fields if needed
+        description = "\n".join(lines)
         embed = discord.Embed(
             title="\U0001f3c6 Weekly Arrest Leaderboard",
-            description="\n".join(lines),
             color=discord.Color.gold(),
             timestamp=datetime.now(timezone.utc),
         )
+        if len(description) <= 4096:
+            embed.description = description
+        else:
+            # Split into ~1000-char fields to stay under embed field limits
+            chunk: list[str] = []
+            chunk_len = 0
+            field_idx = 1
+            for line in lines:
+                if chunk_len + len(line) + 1 > 1000:
+                    embed.add_field(name=f"\u200b" if field_idx > 1 else f"{len(sorted_officers)} officers", value="\n".join(chunk), inline=False)
+                    chunk = []
+                    chunk_len = 0
+                    field_idx += 1
+                chunk.append(line)
+                chunk_len += len(line) + 1
+            if chunk:
+                embed.add_field(name=f"\u200b" if field_idx > 1 else f"{len(sorted_officers)} officers", value="\n".join(chunk), inline=False)
         embed.set_footer(text=f"ENP Bot v{__version__}")
         await interaction.followup.send(embed=embed)
 
