@@ -5,7 +5,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from config import __version__, POLL_INTERVAL
-from database import get_event_count, get_meta
+from database import get_current_timezone, get_event_count, get_meta
 
 
 class UtilityCog(commands.Cog):
@@ -50,6 +50,7 @@ class UtilityCog(commands.Cog):
             name="\u2699\ufe0f Utility",
             value=(
                 "**/about** \u2014 Bot info and configuration\n"
+                "**/tz** \u2014 Show the current operating timezone\n"
                 "**/help** \u2014 This message"
             ),
             inline=False,
@@ -78,6 +79,29 @@ class UtilityCog(commands.Cog):
             value="[Message Developer](https://discord.com/users/608531997849026609)",
             inline=True,
         )
+        embed.set_footer(text=f"ENP Bot v{__version__}")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="tz", description="Show the bot's current operating timezone")
+    async def cmd_tz(self, interaction: discord.Interaction):
+        tz_row = get_current_timezone()
+        dst = get_meta("dst_enabled") or "0"
+        dst_value = "Enabled (+1 GMT)" if dst == "1" else "Disabled (GMT)"
+
+        embed = discord.Embed(
+            title="\U0001f553 Current Operating Timezone",
+            color=discord.Color.blurple(),
+            timestamp=datetime.now(timezone.utc),
+        )
+
+        if tz_row is None:
+            embed.description = "No active timezone window."
+        else:
+            window = f"{tz_row['start_hour']:02d}:00 \u2013 {tz_row['end_hour']:02d}:00 GMT"
+            embed.add_field(name="Timezone", value=tz_row["label"], inline=True)
+            embed.add_field(name="GMT Window", value=window, inline=True)
+            embed.add_field(name="DST", value=dst_value, inline=True)
+
         embed.set_footer(text=f"ENP Bot v{__version__}")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
