@@ -301,7 +301,7 @@ class ShiftsCog(commands.Cog):
     @app_commands.command(name="shifts", description="Show weekly and total shifts for all members")
     @app_commands.describe(date="Pull from stored logs (YYYY-MM-DD). Leave blank for live data.")
     async def cmd_shifts(self, interaction: discord.Interaction, date: str | None = None):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
 
         if date is not None:
             try:
