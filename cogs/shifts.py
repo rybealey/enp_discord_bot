@@ -129,37 +129,108 @@ class ShiftsCog(commands.Cog):
                     "total_shifts": m["total_shifts"],
                 })
 
-        if members:
-            count = insert_shift_snapshot(members, week_ending)
-            logger.info("Shift snapshot: logged %d members for week ending %s", count, week_ending)
-
-            if SHIFTS_CHANNEL_ID:
-                shift_data = get_weekly_shifts_by_timezone(limit=15)
-                if shift_data:
-                    channel = self.bot.get_channel(SHIFTS_CHANNEL_ID)
-                    if channel:
-                        try:
-                            buf = render_shifts_graph(shift_data)
-                            file = discord.File(buf, filename="graph.png")
-                            embed = discord.Embed(
-                                title="\U0001f4ca Weekly Shifts Summary",
-                                color=discord.Color.blurple(),
-                                timestamp=datetime.now(timezone.utc),
-                            )
-                            embed.set_image(url="attachment://graph.png")
-                            embed.set_footer(text=f"ENP Bot v{__version__}")
-                            await channel.send(embed=embed, file=file)
-                            logger.info("Shift snapshot: posted weekly shifts graph")
-                        except Exception:
-                            logger.exception("Shift snapshot: failed to post shifts graph")
-                    else:
-                        logger.warning("Shift snapshot: shifts channel %d not found", SHIFTS_CHANNEL_ID)
-        else:
+        if not members:
             logger.warning("Shift snapshot: no members found in API response")
+            return
+
+        count = insert_shift_snapshot(members, week_ending)
+        logger.info("Shift snapshot: logged %d members for week ending %s", count, week_ending)
+
+        if not SHIFTS_CHANNEL_ID:
+            return
+        channel = self.bot.get_channel(SHIFTS_CHANNEL_ID)
+        if not channel:
+            logger.warning("Shift snapshot: shifts channel %d not found", SHIFTS_CHANNEL_ID)
+            return
+
+        # Post the shift overview embed (same output as /shifts)
+        try:
+            parsed = datetime.strptime(week_ending, "%Y-%m-%d")
+            label = "Week Starting" if parsed.weekday() == 0 else "Week Ending"
+            overview_members = [
+                {
+                    "username": m["username"],
+                    "weekly_shifts": m["weekly_shifts"],
+                    "total_shifts": m["total_shifts"],
+                    "base_rank": m["rank"],
+                }
+                for m in members
+            ]
+            overview_embed = self._build_shifts_overview_embed(
+                overview_members, title_suffix=f" \u2014 {label} {week_ending}"
+            )
+            await channel.send(embed=overview_embed)
+            logger.info("Shift snapshot: posted weekly shifts overview")
+        except Exception:
+            logger.exception("Shift snapshot: failed to post shifts overview")
+
+        # Post the by-timezone graph as a separate message
+        try:
+            shift_data = get_weekly_shifts_by_timezone(limit=15)
+            if shift_data:
+                buf = render_shifts_graph(shift_data)
+                file = discord.File(buf, filename="graph.png")
+                embed = discord.Embed(
+                    title="\U0001f4ca Weekly Shifts by Timezone",
+                    color=discord.Color.blurple(),
+                    timestamp=datetime.now(timezone.utc),
+                )
+                embed.set_image(url="attachment://graph.png")
+                embed.set_footer(text=f"ENP Bot v{__version__}")
+                await channel.send(embed=embed, file=file)
+                logger.info("Shift snapshot: posted weekly shifts graph")
+        except Exception:
+            logger.exception("Shift snapshot: failed to post shifts graph")
 
     @weekly_shift_snapshot_task.before_loop
     async def before_shift_snapshot(self):
         await self.bot.wait_until_ready()
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _build_shifts_overview_embed(self, members: list[dict], title_suffix: str = "") -> discord.Embed:
+        rank_priority = {r: i for i, r in enumerate(RANK_ORDER)}
+        members.sort(key=lambda m: (rank_priority.get(m["base_rank"], 999), -m["weekly_shifts"]))
+
+        grouped: "OrderedDict[str, list[dict]]" = OrderedDict()
+        for m in members:
+            grouped.setdefault(m["base_rank"], []).append(m)
+
+        below_req = sum(1 for m in members if m["weekly_shifts"] < WEEKLY_SHIFT_REQ)
+
+        embed = discord.Embed(
+            title=f"\U0001f4cb Shift Overview{title_suffix}",
+            description=(
+                f"**{len(members)}** members across **{len(grouped)}** ranks\n"
+                f"\u26a0\ufe0f **{below_req}** below weekly requirement ({WEEKLY_SHIFT_REQ} shifts)"
+                if below_req else
+                f"**{len(members)}** members across **{len(grouped)}** ranks\n"
+                f"\u2705 All members meeting weekly requirement ({WEEKLY_SHIFT_REQ} shifts)"
+            ),
+            color=discord.Color.orange() if below_req else discord.Color.green(),
+            timestamp=datetime.now(timezone.utc),
+        )
+
+        for rank_name, rank_members in grouped.items():
+            emoji = RANK_EMOJIS.get(rank_name, "\U0001f46e")
+
+            lines = []
+            for m in rank_members:
+                weekly = m["weekly_shifts"]
+                total = m["total_shifts"]
+                status = "\u2705" if weekly >= WEEKLY_SHIFT_REQ else "\U0001f534"
+                lines.append(f"{status} **{m['username']}**\n\u2003\u2003`Weekly` {weekly}\u2003\u2003`Total` {total}")
+
+            embed.add_field(
+                name=f"{emoji} {rank_name}",
+                value="\n".join(lines),
+                inline=False,
+            )
+
+        embed.set_footer(text=f"ENP Bot v{__version__}")
+        return embed
 
     # ------------------------------------------------------------------
     # Slash commands
@@ -298,63 +369,8 @@ class ShiftsCog(commands.Cog):
             await interaction.followup.send("No members found.", ephemeral=True)
             return
 
-        rank_priority = {r: i for i, r in enumerate(RANK_ORDER)}
-        members.sort(key=lambda m: (rank_priority.get(m["base_rank"], 999), -m["weekly_shifts"]))
-
-        grouped = OrderedDict()
-        for m in members:
-            grouped.setdefault(m["base_rank"], []).append(m)
-
-        below_req = sum(1 for m in members if m["weekly_shifts"] < WEEKLY_SHIFT_REQ)
-
-        embed = discord.Embed(
-            title=f"\U0001f4cb Shift Overview{title_suffix}",
-            description=(
-                f"**{len(members)}** members across **{len(grouped)}** ranks\n"
-                f"\u26a0\ufe0f **{below_req}** below weekly requirement ({WEEKLY_SHIFT_REQ} shifts)"
-                if below_req else
-                f"**{len(members)}** members across **{len(grouped)}** ranks\n"
-                f"\u2705 All members meeting weekly requirement ({WEEKLY_SHIFT_REQ} shifts)"
-            ),
-            color=discord.Color.orange() if below_req else discord.Color.green(),
-            timestamp=datetime.now(timezone.utc),
-        )
-
-        for rank_name, rank_members in grouped.items():
-            emoji = RANK_EMOJIS.get(rank_name, "\U0001f46e")
-
-            lines = []
-            for m in rank_members:
-                weekly = m["weekly_shifts"]
-                total = m["total_shifts"]
-                status = "\u2705" if weekly >= WEEKLY_SHIFT_REQ else "\U0001f534"
-                lines.append(f"{status} **{m['username']}**\n\u2003\u2003`Weekly` {weekly}\u2003\u2003`Total` {total}")
-
-            embed.add_field(
-                name=f"{emoji} {rank_name}",
-                value="\n".join(lines),
-                inline=False,
-            )
-
-        file: discord.File | None = None
-        if date is None:
-            try:
-                shift_data = get_weekly_shifts_by_timezone(limit=15)
-                if shift_data:
-                    buf = render_shifts_graph(shift_data)
-                    file = discord.File(buf, filename="graph.png")
-                    embed.set_image(url="attachment://graph.png")
-            except Exception:
-                logger.exception("/shifts: failed to render shifts graph")
-                file = None
-            embed.set_footer(text=f"ENP Bot v{__version__}")
-        else:
-            embed.set_footer(text=f"Timezone breakdown only available for live data \u00b7 ENP Bot v{__version__}")
-
-        if file is not None:
-            await interaction.followup.send(embed=embed, file=file)
-        else:
-            await interaction.followup.send(embed=embed)
+        embed = self._build_shifts_overview_embed(members, title_suffix)
+        await interaction.followup.send(embed=embed)
 
     @cmd_shifts.autocomplete("date")
     async def shifts_date_autocomplete(
