@@ -91,6 +91,8 @@ class ShiftsCog(commands.Cog):
     async def before_poll_shifts(self):
         await self.bot.wait_until_ready()
 
+    # Trigger times are pinned to fixed UTC (≙ GMT) so DST never shifts them;
+    # the dst_enabled meta flag only affects timezone bucketing for the graph.
     @tasks.loop(time=[time(hour=23, minute=55, tzinfo=timezone.utc),
                        time(hour=0, minute=5, tzinfo=timezone.utc)])
     async def weekly_shift_snapshot_task(self):
@@ -264,7 +266,9 @@ class ShiftsCog(commands.Cog):
                 }
                 for r in rows
             ]
-            title_suffix = f" \u2014 Week Ending {date}"
+            parsed_date = datetime.strptime(date, "%Y-%m-%d")
+            label = "Week Starting" if parsed_date.weekday() == 0 else "Week Ending"
+            title_suffix = f" \u2014 {label} {date}"
         else:
             headers = {"User-Agent": "ENPBot/1.0"}
             try:
@@ -332,19 +336,43 @@ class ShiftsCog(commands.Cog):
                 inline=False,
             )
 
-        embed.set_footer(text=f"ENP Bot v{__version__}")
-        await interaction.followup.send(embed=embed)
+        file: discord.File | None = None
+        if date is None:
+            try:
+                shift_data = get_weekly_shifts_by_timezone(limit=15)
+                if shift_data:
+                    buf = render_shifts_graph(shift_data)
+                    file = discord.File(buf, filename="graph.png")
+                    embed.set_image(url="attachment://graph.png")
+            except Exception:
+                logger.exception("/shifts: failed to render shifts graph")
+                file = None
+            embed.set_footer(text=f"ENP Bot v{__version__}")
+        else:
+            embed.set_footer(text=f"Timezone breakdown only available for live data \u00b7 ENP Bot v{__version__}")
+
+        if file is not None:
+            await interaction.followup.send(embed=embed, file=file)
+        else:
+            await interaction.followup.send(embed=embed)
 
     @cmd_shifts.autocomplete("date")
     async def shifts_date_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
         dates = get_available_snapshot_dates()
-        return [
-            app_commands.Choice(name=f"Week ending {d}", value=d)
-            for d in dates
-            if current.lower() in d
-        ][:25]
+        choices: list[app_commands.Choice[str]] = []
+        for d in dates:
+            if current.lower() not in d:
+                continue
+            try:
+                label = "Week starting" if datetime.strptime(d, "%Y-%m-%d").weekday() == 0 else "Week ending"
+            except ValueError:
+                label = "Week ending"
+            choices.append(app_commands.Choice(name=f"{label} {d}", value=d))
+            if len(choices) >= 25:
+                break
+        return choices
 
     @app_commands.command(name="sum", description="Total sum of logged shift activity")
     @app_commands.describe(scope="Count weekly shifts or all-time total shifts")
