@@ -10,7 +10,7 @@ from config import (
     __version__, CORP_API_URL, SHIFTS_CHANNEL_ID,
     RANK_ORDER, RANK_EMOJIS, WEEKLY_SHIFT_REQ, logger,
 )
-from helpers import strip_rank_tier, render_shifts_graph
+from helpers import strip_rank_tier
 from database import (
     insert_shift_snapshot,
     get_shift_snapshot,
@@ -18,7 +18,6 @@ from database import (
     get_weekly_arrest_leaderboard,
     get_weekly_shift_sum,
     get_total_shift_sum,
-    get_weekly_shifts_by_timezone,
     update_shift_cache_and_log,
     sync_corp_roster,
     reset_shift_cache,
@@ -163,24 +162,6 @@ class ShiftsCog(commands.Cog):
             logger.info("Shift snapshot: posted weekly shifts overview")
         except Exception:
             logger.exception("Shift snapshot: failed to post shifts overview")
-
-        # Post the by-timezone graph as a separate message
-        try:
-            shift_data = get_weekly_shifts_by_timezone(limit=15)
-            if shift_data:
-                buf = render_shifts_graph(shift_data)
-                file = discord.File(buf, filename="graph.png")
-                embed = discord.Embed(
-                    title="\U0001f4ca Weekly Shifts by Timezone",
-                    color=discord.Color.blurple(),
-                    timestamp=datetime.now(timezone.utc),
-                )
-                embed.set_image(url="attachment://graph.png")
-                embed.set_footer(text=f"ENP Bot v{__version__}")
-                await channel.send(embed=embed, file=file)
-                logger.info("Shift snapshot: posted weekly shifts graph")
-        except Exception:
-            logger.exception("Shift snapshot: failed to post shifts graph")
 
     @weekly_shift_snapshot_task.before_loop
     async def before_shift_snapshot(self):
