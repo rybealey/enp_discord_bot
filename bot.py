@@ -25,6 +25,7 @@ EXTENSIONS = [
     "cogs.utility",
     "cogs.livefeed",
     "cogs.dst",
+    "cogs.dev_config",
 ]
 
 

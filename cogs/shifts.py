@@ -7,7 +7,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from config import (
-    __version__, CORP_API_URL, SHIFTS_CHANNEL_ID,
+    __version__, CORP_API_URL, SHIFTS_CHANNEL_ID, LIVEFEED_CHANNEL_ID,
     RANK_ORDER, RANK_EMOJIS, WEEKLY_SHIFT_REQ, logger,
 )
 from helpers import strip_rank_tier
@@ -33,10 +33,12 @@ class ShiftsCog(commands.Cog):
     async def cog_load(self):
         self.poll_shifts_task.start()
         self.weekly_shift_snapshot_task.start()
+        self.tz_end_reminder_task.start()
 
     async def cog_unload(self):
         self.poll_shifts_task.cancel()
         self.weekly_shift_snapshot_task.cancel()
+        self.tz_end_reminder_task.cancel()
 
     # ------------------------------------------------------------------
     # Background tasks
@@ -165,6 +167,42 @@ class ShiftsCog(commands.Cog):
 
     @weekly_shift_snapshot_task.before_loop
     async def before_shift_snapshot(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(time=[
+        time(hour=7,  minute=50, tzinfo=timezone.utc),   # NA ends 08:00 UTC
+        time(hour=15, minute=50, tzinfo=timezone.utc),   # OC ends 16:00 UTC
+        time(hour=23, minute=50, tzinfo=timezone.utc),   # EU ends 00:00 UTC
+    ])
+    async def tz_end_reminder_task(self):
+        tz_by_hour = {7: "NA", 15: "OC", 23: "EU"}
+        tz_name = tz_by_hour.get(datetime.now(timezone.utc).hour)
+        if tz_name is None:
+            return
+
+        if not LIVEFEED_CHANNEL_ID:
+            return
+        channel = self.bot.get_channel(LIVEFEED_CHANNEL_ID)
+        if channel is None:
+            logger.warning("TZ reminder: livefeed channel %s not found", LIVEFEED_CHANNEL_ID)
+            return
+
+        role = discord.utils.get(channel.guild.roles, name=tz_name)
+        mention = role.mention if role else f"@{tz_name}"
+
+        try:
+            await channel.send(
+                f"{mention} \u2014 the **{tz_name}** timezone ends in 10 minutes. "
+                f"Please reload the client to ensure your completed shifts are "
+                f"logged in the correct timezone.",
+                allowed_mentions=discord.AllowedMentions(roles=True),
+            )
+            logger.info("TZ reminder: posted 10-minute warning for %s", tz_name)
+        except Exception:
+            logger.exception("TZ reminder: failed to post warning for %s", tz_name)
+
+    @tz_end_reminder_task.before_loop
+    async def before_tz_end_reminder(self):
         await self.bot.wait_until_ready()
 
     # ------------------------------------------------------------------
