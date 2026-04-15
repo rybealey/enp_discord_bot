@@ -1,11 +1,11 @@
 import discord
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from discord import app_commands
 from discord.ext import commands
 
 from config import __version__, POLL_INTERVAL
-from database import get_current_timezone, get_event_count
+from database import get_current_timezone, get_event_count, get_timezones
 
 
 class UtilityCog(commands.Cog):
@@ -80,24 +80,39 @@ class UtilityCog(commands.Cog):
         embed.set_footer(text=f"ENP Bot v{__version__}")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="tz", description="Show the bot's current operating timezone")
+    @app_commands.command(name="tz", description="Show all operating timezone slots in your local time")
     async def cmd_tz(self, interaction: discord.Interaction):
-        tz_row = get_current_timezone()
+        active = get_current_timezone()
+        active_label = active["label"] if active else None
+
+        now = datetime.now(timezone.utc)
+        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        lines = []
+        for row in get_timezones():
+            label = row["label"]
+            start_hour = row["start_hour"]
+            end_hour = row["end_hour"]
+
+            start_dt = midnight + timedelta(hours=start_hour)
+            end_dt = midnight + timedelta(hours=end_hour)
+            if end_hour <= start_hour:
+                end_dt += timedelta(days=1)
+
+            marker = "\U0001f7e2" if label == active_label else "\u26aa"
+            gmt_window = f"{start_hour:02d}:00\u2013{end_hour:02d}:00 GMT"
+            lines.append(
+                f"{marker} **{label}** \u2014 <t:{int(start_dt.timestamp())}:t> \u2013 "
+                f"<t:{int(end_dt.timestamp())}:t>  `({gmt_window})`"
+            )
 
         embed = discord.Embed(
-            title="\U0001f553 Current Operating Timezone",
+            title="\U0001f553 Operating Timezones",
+            description="\n".join(lines) if lines else "No timezones configured.",
             color=discord.Color.blurple(),
-            timestamp=datetime.now(timezone.utc),
+            timestamp=now,
         )
-
-        if tz_row is None:
-            embed.description = "No active timezone window."
-        else:
-            window = f"{tz_row['start_hour']:02d}:00 \u2013 {tz_row['end_hour']:02d}:00 GMT"
-            embed.add_field(name="Timezone", value=tz_row["label"], inline=True)
-            embed.add_field(name="GMT Window", value=window, inline=True)
-
-        embed.set_footer(text=f"ENP Bot v{__version__}")
+        embed.set_footer(text=f"\U0001f7e2 = currently active  \u2022  ENP Bot v{__version__}")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
