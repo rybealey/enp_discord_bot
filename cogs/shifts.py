@@ -92,8 +92,8 @@ class ShiftsCog(commands.Cog):
     async def before_poll_shifts(self):
         await self.bot.wait_until_ready()
 
-    # Trigger times are pinned to fixed UTC (≙ GMT) so DST never shifts them;
-    # the dst_enabled meta flag only affects timezone bucketing for the graph.
+    # Trigger times are pinned to fixed UTC (≙ GMT). Role timezones are fixed
+    # GMT year-round — no DST adjustment anywhere.
     @tasks.loop(time=[time(hour=23, minute=55, tzinfo=timezone.utc),
                        time(hour=0, minute=5, tzinfo=timezone.utc)])
     async def weekly_shift_snapshot_task(self):
