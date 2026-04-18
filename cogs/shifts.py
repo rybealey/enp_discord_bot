@@ -33,7 +33,7 @@ class ShiftsCog(commands.Cog):
     async def cog_load(self):
         self.poll_shifts_task.start()
         self.weekly_shift_snapshot_task.start()
-        self.tz_end_reminder_task.start()
+        # self.tz_end_reminder_task.start()  # temporarily disabled
 
     async def cog_unload(self):
         self.poll_shifts_task.cancel()
